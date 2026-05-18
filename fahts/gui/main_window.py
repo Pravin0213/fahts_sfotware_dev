@@ -16,11 +16,10 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
-    QComboBox,
     QFileDialog,
     QFrame,
     QLabel,
@@ -86,9 +85,8 @@ class MainWindow(QMainWindow):
         self._post_processor: object = None        # PostProcessor (Task 3.9)
 
         # Animation state (Task 4.4)
-        self._anim_playing: bool = False
         self._anim_t_idx: int = 0
-        self._anim_fps: int = 10
+        self._anim_fps: int = 10   # used for save-animation only
         self._selected_eid: int | None = None
         self._settings = QSettings("FAHTS", "FAHTS-Solver")
         self._load_recent_files()
@@ -260,9 +258,9 @@ class MainWindow(QMainWindow):
         # ── View — temperature colormap (exclusive radio group) ───────────────
         self._action_cmap_inferno = QAction("&Inferno", self)
         self._action_cmap_inferno.setCheckable(True)
-        self._action_cmap_inferno.setChecked(True)
         self._action_cmap_jet = QAction("&Jet", self)
         self._action_cmap_jet.setCheckable(True)
+        self._action_cmap_jet.setChecked(True)
         self._action_cmap_plasma = QAction("&Plasma", self)
         self._action_cmap_plasma.setCheckable(True)
         self._action_cmap_coolwarm = QAction("&Coolwarm", self)
@@ -453,9 +451,10 @@ class MainWindow(QMainWindow):
 
     def _build_animation_toolbar(self) -> None:
         """
-        Build the animation playback toolbar (shown at the bottom when results exist).
+        Build the time-navigation toolbar (shown at the bottom when results exist).
 
-        Layout: [⏮][⏪][▶/⏸][⏩][⏭]  FPS: [combo]  [═══slider═══]  "Step N/M  |  t = X s"
+        Layout: [⏮][⏪][⏩][⏭]  [═══slider═══]  "Step N/M  |  t = X s"
+        Hover over the T-t graph in the sidebar to drive the 3-D view instead of play.
         """
         tb = QToolBar("Animation", self)
         tb.setMovable(False)
@@ -463,7 +462,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, tb)
         self._anim_toolbar = tb
 
-        # ── Playback buttons ──────────────────────────────────────────────────
+        # ── Step navigation buttons ───────────────────────────────────────────
         self._action_anim_first = QAction("⏮", self)
         self._action_anim_first.setToolTip("Go to first time step  [Home]")
         self._action_anim_first.setShortcut(QKeySequence(Qt.Key.Key_Home))
@@ -473,11 +472,6 @@ class MainWindow(QMainWindow):
         self._action_anim_prev.setToolTip("Step back one time step  [←]")
         self._action_anim_prev.setShortcut(QKeySequence(Qt.Key.Key_Left))
         self._action_anim_prev.triggered.connect(self._on_anim_prev)
-
-        self._action_anim_play = QAction("▶", self)
-        self._action_anim_play.setToolTip("Play / Pause animation  [Space]")
-        self._action_anim_play.setShortcut(QKeySequence(Qt.Key.Key_Space))
-        self._action_anim_play.triggered.connect(self._on_anim_play_pause)
 
         self._action_anim_next = QAction("⏩", self)
         self._action_anim_next.setToolTip("Step forward one time step  [→]")
@@ -491,20 +485,8 @@ class MainWindow(QMainWindow):
 
         tb.addAction(self._action_anim_first)
         tb.addAction(self._action_anim_prev)
-        tb.addAction(self._action_anim_play)
         tb.addAction(self._action_anim_next)
         tb.addAction(self._action_anim_last)
-        tb.addSeparator()
-
-        # ── FPS selector ──────────────────────────────────────────────────────
-        tb.addWidget(QLabel(" FPS: "))
-        self._anim_speed_combo = QComboBox()
-        self._anim_speed_combo.addItems(["1", "2", "5", "10", "15", "20"])
-        self._anim_speed_combo.setCurrentText("10")
-        self._anim_speed_combo.setFixedWidth(52)
-        self._anim_speed_combo.setToolTip("Animation playback speed (frames per second)")
-        self._anim_speed_combo.currentTextChanged.connect(self._on_anim_speed_changed)
-        tb.addWidget(self._anim_speed_combo)
         tb.addSeparator()
 
         # ── Time slider (stretches to fill available width) ───────────────────
@@ -525,10 +507,6 @@ class MainWindow(QMainWindow):
         self._anim_time_label.setMinimumWidth(200)
         self._anim_time_label.setStyleSheet("font-family: monospace; font-size: 11px;")
         tb.addWidget(self._anim_time_label)
-
-        # ── Timer for playback ────────────────────────────────────────────────
-        self._anim_timer = QTimer(self)
-        self._anim_timer.timeout.connect(self._on_anim_tick)
 
         # Initially hidden until analysis results are available
         tb.setVisible(False)
@@ -557,6 +535,7 @@ class MainWindow(QMainWindow):
         left_splitter.addWidget(self._props_panel)
 
         self._results_panel = ResultsPanel()
+        self._results_panel.time_hovered.connect(self._anim_go_to)
         left_splitter.addWidget(self._results_panel)
         left_splitter.setSizes([280, 130, 110, 230])
 
@@ -878,13 +857,39 @@ class MainWindow(QMainWindow):
         log.info("%s\n%s", status_line, summary)
 
         self._anim_show(tf)
+        self._results_panel.show_results(tf)
         self._action_export_peak_csv.setEnabled(True)
         self._action_export_history_csv.setEnabled(True)
         self._action_export_vtk.setEnabled(True)
         self._action_export_excel.setEnabled(True)
         self._action_save_animation.setEnabled(True)
         self._action_threshold_overlay.setEnabled(True)
-        QMessageBox.information(self, "Analysis Complete", summary)
+        self._show_scrollable_summary("Analysis Complete", summary)
+
+    def _show_scrollable_summary(self, title: str, text: str) -> None:
+        """Show a resizable dialog with a scrollable text area."""
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
+        from PyQt6.QtGui import QFont
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.resize(520, 480)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        text_edit = QPlainTextEdit(dlg)
+        text_edit.setReadOnly(True)
+        text_edit.setFont(QFont("Courier New", 9))
+        text_edit.setPlainText(text)
+        layout.addWidget(text_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, dlg)
+        buttons.accepted.connect(dlg.accept)
+        layout.addWidget(buttons)
+
+        dlg.exec()
 
     def _on_analysis_error(self, message: str) -> None:
         """Show an error dialog if the worker raises an exception."""
@@ -1091,15 +1096,13 @@ class MainWindow(QMainWindow):
         return len(self._last_result.times) if self._last_result is not None else 0
 
     def _anim_show(self, tf: object) -> None:
-        """Populate and show the animation toolbar for *tf* (TemperatureField)."""
+        """Populate and show the navigation toolbar for *tf* (TemperatureField)."""
         n = len(tf.times)
         self._anim_slider.blockSignals(True)
         self._anim_slider.setRange(0, max(n - 1, 0))
         self._anim_slider.setValue(0)
         self._anim_slider.blockSignals(False)
         self._anim_t_idx = 0
-        self._anim_playing = False
-        self._action_anim_play.setText("▶")
         self._anim_toolbar.setVisible(True)
         self._anim_go_to(0)
 
@@ -1112,12 +1115,7 @@ class MainWindow(QMainWindow):
             self._anim_time_label.setText("  t = —")
 
     def _anim_stop(self) -> None:
-        """Pause animation without hiding the toolbar."""
-        self._anim_playing = False
-        if hasattr(self, "_anim_timer"):
-            self._anim_timer.stop()
-        if hasattr(self, "_action_anim_play"):
-            self._action_anim_play.setText("▶")
+        """No-op — auto-play removed; navigation is driven by graph hover or step buttons."""
 
     def _anim_go_to(self, idx: int) -> None:
         """Jump to time step *idx*: update slider, scene, and time label."""
@@ -1142,24 +1140,6 @@ class MainWindow(QMainWindow):
             time_str = f"t = {t:.0f} s  ({minutes:.1f} min)"
         self._anim_time_label.setText(f"  Step {idx + 1}/{n}  |  {time_str}")
 
-    def _on_anim_play_pause(self) -> None:
-        """Toggle play / pause.  Starts the timer from the current step."""
-        if self._anim_playing:
-            self._anim_stop()
-        else:
-            self._anim_playing = True
-            self._action_anim_play.setText("⏸")
-            interval_ms = max(1, round(1000 / self._anim_fps))
-            self._anim_timer.start(interval_ms)
-
-    def _on_anim_tick(self) -> None:
-        """QTimer tick — advance one step; stop when the last step is reached."""
-        next_idx = self._anim_t_idx + 1
-        if next_idx >= self._anim_n_steps():
-            self._anim_stop()
-            return
-        self._anim_go_to(next_idx)
-
     def _on_anim_first(self) -> None:
         self._anim_stop()
         self._anim_go_to(0)
@@ -1180,15 +1160,6 @@ class MainWindow(QMainWindow):
         """User dragged the slider — pause and jump to that step."""
         self._anim_stop()
         self._anim_go_to(value)
-
-    def _on_anim_speed_changed(self, text: str) -> None:
-        """Update playback FPS when the combobox selection changes."""
-        try:
-            self._anim_fps = int(text)
-        except ValueError:
-            self._anim_fps = 10
-        if self._anim_playing:
-            self._anim_timer.setInterval(max(1, round(1000 / self._anim_fps)))
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 

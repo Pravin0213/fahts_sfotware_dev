@@ -197,7 +197,7 @@ class TemperatureColourMap:
 
     def __init__(
         self,
-        cmap: str = "inferno",
+        cmap: str = "jet",
         clim: tuple[float, float] | None = None,
         n_colors: int = 256,
         threshold_overlay: bool = False,

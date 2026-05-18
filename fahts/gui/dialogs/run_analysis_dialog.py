@@ -78,7 +78,7 @@ class RunAnalysisDialog(QDialog):
         super().__init__(parent)
         self._n_exposed = n_exposed
         self.setWindowTitle("Run Heat Transfer Analysis")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(760)
         self._build_ui()
         self._on_dt_changed()   # initialise output_dt min bound
 
@@ -178,7 +178,7 @@ class RunAnalysisDialog(QDialog):
         self._dt_s.setValue(self._DEFAULT_DT_S)
         self._dt_s.setToolTip(
             "Solver time step [s].  Smaller → more accurate but slower.\n"
-            "Backward Euler is unconditionally stable — 30 s is typical."
+            "Crank-Nicolson is unconditionally stable — 30 s is typical."
         )
         self._dt_s.valueChanged.connect(self._on_dt_changed)
         time_form.addRow("Time step (dt):", self._dt_s)
@@ -196,29 +196,28 @@ class RunAnalysisDialog(QDialog):
 
         root.addWidget(time_grp)
 
-        # ── BOX surface mesh ─────────────────────────────────────────────────
-        box_grp = QGroupBox("BOX Surface Mesh  (axial × hoop, FAHTS approach)")
-        box_vbox = QVBoxLayout(box_grp)
+        # ── Mesh — four profile columns side by side ──────────────────────────
+        mesh_grp = QGroupBox("Mesh")
+        mesh_hlayout = QHBoxLayout(mesh_grp)
+        mesh_hlayout.setSpacing(8)
 
-        rb_row = QHBoxLayout()
-        self._box_default_rb = QRadioButton(
-            f"Default  (n_top={self._DEFAULT_N_TOP}, "
-            f"n_side={self._DEFAULT_N_SIDE}, "
-            f"n_length={self._DEFAULT_N_LENGTH})"
-        )
+        # ── BOX column ───────────────────────────────────────────────────────
+        box_col = QGroupBox("BOX")
+        box_vbox = QVBoxLayout(box_col)
+        box_vbox.setSpacing(6)
+
+        box_rb_row = QHBoxLayout()
+        self._box_default_rb = QRadioButton("Default")
         self._box_default_rb.setChecked(True)
         self._box_default_rb.setToolTip(
-            "Standard FAHTS mesh divisions:\n"
-            f"  n_top={self._DEFAULT_N_TOP}   elements across top/bottom face\n"
-            f"  n_side={self._DEFAULT_N_SIDE}  elements across left/right face\n"
-            f"  n_length={self._DEFAULT_N_LENGTH}  elements along beam axis"
+            f"n_top={self._DEFAULT_N_TOP}, n_side={self._DEFAULT_N_SIDE}, "
+            f"n_length={self._DEFAULT_N_LENGTH}"
         )
         self._box_custom_rb = QRadioButton("Custom")
         self._box_default_rb.toggled.connect(self._on_box_mesh_mode_changed)
-        rb_row.addWidget(self._box_default_rb)
-        rb_row.addWidget(self._box_custom_rb)
-        rb_row.addStretch()
-        box_vbox.addLayout(rb_row)
+        box_rb_row.addWidget(self._box_default_rb)
+        box_rb_row.addWidget(self._box_custom_rb)
+        box_vbox.addLayout(box_rb_row)
 
         box_form = QFormLayout()
         box_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -227,14 +226,14 @@ class RunAnalysisDialog(QDialog):
         self._n_top_sb.setRange(1, 20)
         self._n_top_sb.setValue(self._DEFAULT_N_TOP)
         self._n_top_sb.setEnabled(False)
-        self._n_top_sb.setToolTip("Elements across top / bottom face (width direction)")
+        self._n_top_sb.setToolTip("Elements across top/bottom face")
         box_form.addRow("n_top:", self._n_top_sb)
 
         self._n_side_sb = QSpinBox()
         self._n_side_sb.setRange(1, 20)
         self._n_side_sb.setValue(self._DEFAULT_N_SIDE)
         self._n_side_sb.setEnabled(False)
-        self._n_side_sb.setToolTip("Elements across left / right face (height direction)")
+        self._n_side_sb.setToolTip("Elements across left/right face")
         box_form.addRow("n_side:", self._n_side_sb)
 
         self._n_length_sb = QSpinBox()
@@ -245,23 +244,25 @@ class RunAnalysisDialog(QDialog):
         box_form.addRow("n_length:", self._n_length_sb)
 
         box_vbox.addLayout(box_form)
-        root.addWidget(box_grp)
+        box_vbox.addStretch()
+        mesh_hlayout.addWidget(box_col)
 
-        # ── I-Profile surface mesh ───────────────────────────────────────────
-        iprofil_grp = QGroupBox("I-Profile Surface Mesh  (IHPROFIL, axial × hoop)")
-        iprofil_vbox = QVBoxLayout(iprofil_grp)
+        # ── I-Profile column ─────────────────────────────────────────────────
+        iprofil_col = QGroupBox("I-Profile")
+        iprofil_vbox = QVBoxLayout(iprofil_col)
+        iprofil_vbox.setSpacing(6)
 
         ip_rb_row = QHBoxLayout()
-        self._iprofil_default_rb = QRadioButton(
-            f"Default  (n_top={self._DEFAULT_N_TOP_I}, n_side={self._DEFAULT_N_SIDE_I}, "
-            f"n_bot={self._DEFAULT_N_BOTTOM_I}, n_len={self._DEFAULT_N_LENGTH_I})"
-        )
+        self._iprofil_default_rb = QRadioButton("Default")
         self._iprofil_default_rb.setChecked(True)
+        self._iprofil_default_rb.setToolTip(
+            f"n_top={self._DEFAULT_N_TOP_I}, n_side={self._DEFAULT_N_SIDE_I}, "
+            f"n_bottom={self._DEFAULT_N_BOTTOM_I}, n_length={self._DEFAULT_N_LENGTH_I}"
+        )
         self._iprofil_custom_rb = QRadioButton("Custom")
         self._iprofil_default_rb.toggled.connect(self._on_iprofil_mesh_mode_changed)
         ip_rb_row.addWidget(self._iprofil_default_rb)
         ip_rb_row.addWidget(self._iprofil_custom_rb)
-        ip_rb_row.addStretch()
         iprofil_vbox.addLayout(ip_rb_row)
 
         ip_form = QFormLayout()
@@ -271,21 +272,21 @@ class RunAnalysisDialog(QDialog):
         self._n_top_i_sb.setRange(1, 20)
         self._n_top_i_sb.setValue(self._DEFAULT_N_TOP_I)
         self._n_top_i_sb.setEnabled(False)
-        self._n_top_i_sb.setToolTip("Elements across top flange width (hoop direction)")
+        self._n_top_i_sb.setToolTip("Elements across top flange width")
         ip_form.addRow("n_top:", self._n_top_i_sb)
 
         self._n_side_i_sb = QSpinBox()
         self._n_side_i_sb.setRange(1, 20)
         self._n_side_i_sb.setValue(self._DEFAULT_N_SIDE_I)
         self._n_side_i_sb.setEnabled(False)
-        self._n_side_i_sb.setToolTip("Elements along web height (hoop direction, each web face)")
+        self._n_side_i_sb.setToolTip("Elements along web height")
         ip_form.addRow("n_side:", self._n_side_i_sb)
 
         self._n_bottom_i_sb = QSpinBox()
         self._n_bottom_i_sb.setRange(1, 20)
         self._n_bottom_i_sb.setValue(self._DEFAULT_N_BOTTOM_I)
         self._n_bottom_i_sb.setEnabled(False)
-        self._n_bottom_i_sb.setToolTip("Elements across bottom flange width (hoop direction)")
+        self._n_bottom_i_sb.setToolTip("Elements across bottom flange width")
         ip_form.addRow("n_bottom:", self._n_bottom_i_sb)
 
         self._n_length_i_sb = QSpinBox()
@@ -296,22 +297,24 @@ class RunAnalysisDialog(QDialog):
         ip_form.addRow("n_length:", self._n_length_i_sb)
 
         iprofil_vbox.addLayout(ip_form)
-        root.addWidget(iprofil_grp)
+        iprofil_vbox.addStretch()
+        mesh_hlayout.addWidget(iprofil_col)
 
-        # ── PIPE surface mesh ─────────────────────────────────────────────────
-        pipe_grp = QGroupBox("PIPE Surface Mesh  (axial × hoop)")
-        pipe_vbox = QVBoxLayout(pipe_grp)
+        # ── PIPE column ──────────────────────────────────────────────────────
+        pipe_col = QGroupBox("PIPE")
+        pipe_vbox = QVBoxLayout(pipe_col)
+        pipe_vbox.setSpacing(6)
 
         pipe_rb_row = QHBoxLayout()
-        self._pipe_default_rb = QRadioButton(
-            f"Default  (c_circ={self._DEFAULT_C_CIRC}, n_length={self._DEFAULT_N_LENGTH_P})"
-        )
+        self._pipe_default_rb = QRadioButton("Default")
         self._pipe_default_rb.setChecked(True)
+        self._pipe_default_rb.setToolTip(
+            f"c_circ={self._DEFAULT_C_CIRC}, n_length={self._DEFAULT_N_LENGTH_P}"
+        )
         self._pipe_custom_rb = QRadioButton("Custom")
         self._pipe_default_rb.toggled.connect(self._on_pipe_mesh_mode_changed)
         pipe_rb_row.addWidget(self._pipe_default_rb)
         pipe_rb_row.addWidget(self._pipe_custom_rb)
-        pipe_rb_row.addStretch()
         pipe_vbox.addLayout(pipe_rb_row)
 
         pipe_form = QFormLayout()
@@ -321,7 +324,7 @@ class RunAnalysisDialog(QDialog):
         self._c_circ_sb.setRange(3, 32)
         self._c_circ_sb.setValue(self._DEFAULT_C_CIRC)
         self._c_circ_sb.setEnabled(False)
-        self._c_circ_sb.setToolTip("Elements around the circumference (hoop direction, ≥ 3)")
+        self._c_circ_sb.setToolTip("Elements around the circumference (≥ 3)")
         pipe_form.addRow("c_circ:", self._c_circ_sb)
 
         self._n_length_p_sb = QSpinBox()
@@ -332,22 +335,24 @@ class RunAnalysisDialog(QDialog):
         pipe_form.addRow("n_length:", self._n_length_p_sb)
 
         pipe_vbox.addLayout(pipe_form)
-        root.addWidget(pipe_grp)
+        pipe_vbox.addStretch()
+        mesh_hlayout.addWidget(pipe_col)
 
-        # ── Shell / plate surface mesh ────────────────────────────────────────
-        shell_grp = QGroupBox("Shell / Plate Surface Mesh  (QUADSHEL, 2-D face)")
-        shell_vbox = QVBoxLayout(shell_grp)
+        # ── Shell column ─────────────────────────────────────────────────────
+        shell_col = QGroupBox("Shell")
+        shell_vbox = QVBoxLayout(shell_col)
+        shell_vbox.setSpacing(6)
 
         shell_rb_row = QHBoxLayout()
-        self._shell_default_rb = QRadioButton(
-            f"Default  (mesh_12={self._DEFAULT_MESH_12}, mesh_14={self._DEFAULT_MESH_14})"
-        )
+        self._shell_default_rb = QRadioButton("Default")
         self._shell_default_rb.setChecked(True)
+        self._shell_default_rb.setToolTip(
+            f"mesh_12={self._DEFAULT_MESH_12}, mesh_14={self._DEFAULT_MESH_14}"
+        )
         self._shell_custom_rb = QRadioButton("Custom")
         self._shell_default_rb.toggled.connect(self._on_shell_mesh_mode_changed)
         shell_rb_row.addWidget(self._shell_default_rb)
         shell_rb_row.addWidget(self._shell_custom_rb)
-        shell_rb_row.addStretch()
         shell_vbox.addLayout(shell_rb_row)
 
         shell_form = QFormLayout()
@@ -368,7 +373,10 @@ class RunAnalysisDialog(QDialog):
         shell_form.addRow("mesh_14:", self._mesh_14_sb)
 
         shell_vbox.addLayout(shell_form)
-        root.addWidget(shell_grp)
+        shell_vbox.addStretch()
+        mesh_hlayout.addWidget(shell_col)
+
+        root.addWidget(mesh_grp)
 
         # ── Estimated output info ────────────────────────────────────────────
         self._est_label = QLabel()

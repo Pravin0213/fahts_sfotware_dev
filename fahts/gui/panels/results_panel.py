@@ -1,8 +1,8 @@
 """
 Phase 4.5 / 4.6 — results_panel.py
-Left-sidebar panel with two complementary result views for the selected beam:
+Left-sidebar panel with two complementary result views:
   • 2-D cross-section temperature contour (BOX sections, inferno, gouraud) — Task 4.5
-  • Centroid temperature-time graph with animated step marker        — Task 4.6
+  • Peak-element temperature-time graph with hover navigation          — Task 4.6
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 import matplotlib.tri as mtri
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from fahts.core.model.fem_model import FEMModel
@@ -29,27 +29,48 @@ class ResultsPanel(QWidget):
 
     Public API
     ----------
+    show_results(result)
+        Rebuild the global hottest-element T-t graph.  Call once after analysis.
     show_section(eid, model, result, t_idx=0)
-        Display / refresh both plots for *eid* at animation step *t_idx*.
-        Builds the cross-section mesh on first call for a new element.
+        Display / refresh the cross-section contour for *eid* at step *t_idx*.
     update_time(t_idx)
-        Lightweight update to a new time step: redraws the cross-section
-        (data changes) and moves the T-t marker line (no full replot).
+        Move the T-t graph cursor to step *t_idx* and redraw cross-section.
     clear()
-        Reset both plots to placeholder state.
+        Reset all plots to placeholder state.
+
+    Signals
+    -------
+    time_hovered(int)
+        Emitted while the user moves the pointer over the T-t graph; carries
+        the nearest time-step index so the 3-D view can update in real time.
     """
+
+    time_hovered: pyqtSignal = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._eid: int | None = None
-        self._result: object = None               # TemperatureField | None
+        self._result: object = None
         self._t_idx: int = 0
-        self._mesh_nodes: np.ndarray | None = None   # (n_nodes, 2) [y, z]
+        self._hottest_col: int | None = None       # column index of hottest element
+        self._mesh_nodes: np.ndarray | None = None
         self._triang: mtri.Triangulation | None = None
-        self._tt_vline: Line2D | None = None         # step marker on T-t graph
+        self._tt_vline: Line2D | None = None
+        self._tt_ax = None                         # axes for the T-t graph
         self._init_ui()
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def show_results(self, result: object) -> None:
+        """Rebuild the global T-t graph for the hottest element in *result*."""
+        self._result = result
+        T_centroid = getattr(result, "T_centroid", None)
+        if T_centroid is not None and T_centroid.shape[1] > 0:
+            self._hottest_col = int(np.argmax(T_centroid.max(axis=0)))
+        else:
+            self._hottest_col = None
+        self._t_idx = 0
+        self._redraw_tt()
 
     def show_section(
         self,
@@ -58,33 +79,29 @@ class ResultsPanel(QWidget):
         result: object,
         t_idx: int = 0,
     ) -> None:
-        """Display both plots for element *eid* at step *t_idx*."""
+        """Display the cross-section contour for element *eid* at step *t_idx*."""
         self._eid = eid
         self._result = result
         self._t_idx = t_idx
         self._build_mesh(eid, model)
         self._redraw()
-        self._redraw_tt()
 
     def update_time(self, t_idx: int) -> None:
-        """
-        Refresh to a new animation step.
-
-        The cross-section is fully redrawn (temperature values change).
-        The T-t graph only moves the step-marker line (no full replot).
-        """
+        """Move the T-t graph cursor and refresh the cross-section for step *t_idx*."""
         self._t_idx = t_idx
         if self._eid is not None and self._result is not None:
             self._redraw()
-            self._update_tt_marker()
+        self._update_tt_marker()
 
     def clear(self) -> None:
-        """Reset both plots to placeholder state."""
+        """Reset all plots to placeholder state."""
         self._eid = None
         self._result = None
+        self._hottest_col = None
         self._mesh_nodes = None
         self._triang = None
         self._tt_vline = None
+        self._tt_ax = None
         self._placeholder.show()
         self._canvas.hide()
         self._tt_placeholder.show()
@@ -117,12 +134,13 @@ class ResultsPanel(QWidget):
         layout.addWidget(self._canvas, 1)
 
         # ── Temperature-time block ────────────────────────────────────────────
-        hdr_tt = QLabel("Temperature vs Time")
+        hdr_tt = QLabel("Peak Temperature vs Time")
         hdr_tt.setStyleSheet("font-weight: bold; color: #aaaaaa; margin-top: 4px;")
         layout.addWidget(hdr_tt)
 
         self._tt_placeholder = QLabel(
-            "Select a beam with\nanalysis results\nto view T-t graph."
+            "Run analysis to view\ntemperature history.\n\nHover over the graph\n"
+            "to update the 3-D view."
         )
         self._tt_placeholder.setWordWrap(True)
         self._tt_placeholder.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -134,6 +152,9 @@ class ResultsPanel(QWidget):
         self._tt_canvas = FigureCanvas(self._tt_fig)
         self._tt_canvas.hide()
         layout.addWidget(self._tt_canvas, 1)
+
+        # Hover tracking: motion over the T-t graph drives the 3-D time step
+        self._tt_canvas.mpl_connect("motion_notify_event", self._on_tt_hover)
 
     # ── Mesh building ─────────────────────────────────────────────────────────
 
@@ -220,55 +241,59 @@ class ResultsPanel(QWidget):
     # ── Temperature-time plot ─────────────────────────────────────────────────
 
     def _redraw_tt(self) -> None:
-        """Full redraw of the centroid temperature-time graph."""
+        """Full redraw of the global peak-element T-t graph."""
         self._tt_fig.clf()
         ax = self._tt_fig.add_subplot(111)
         ax.set_facecolor("#1e1e1e")
+        self._tt_ax = ax
         self._tt_vline = None
 
-        if self._result is None or self._eid is None:
+        if self._result is None or self._hottest_col is None:
             self._tt_placeholder.show()
             self._tt_canvas.hide()
             return
 
-        # Locate this element's column in T_centroid
-        element_ids = list(getattr(self._result, "element_ids", []))
-        if self._eid not in element_ids:
-            self._tt_placeholder.show()
-            self._tt_canvas.hide()
-            return
-
-        elem_col = element_ids.index(self._eid)
         T_centroid = getattr(self._result, "T_centroid", None)
-        if T_centroid is None:
+        times = getattr(self._result, "times", None)
+        if T_centroid is None or times is None:
             self._tt_placeholder.show()
             self._tt_canvas.hide()
             return
 
-        times = np.asarray(self._result.times)
-        T_hist = T_centroid[:, elem_col]           # (n_steps,)
-        t_cur = float(times[min(self._t_idx, len(times) - 1)])
+        times_arr = np.asarray(times)
+        T_hist = T_centroid[:, self._hottest_col]   # (n_steps,)
 
-        # Centroid temperature curve
-        ax.plot(times, T_hist, color="#ff7043", linewidth=1.5, label="Centroid T")
+        # Global temperature range across all elements and all time steps
+        T_global_min = float(np.nanmin(T_centroid))
+        T_global_max = float(np.nanmax(T_centroid))
+        y_pad = max((T_global_max - T_global_min) * 0.05, 5.0)
 
-        # 600 °C critical threshold
-        if _CRIT_T <= float(T_hist.max()) * 1.1 + 50:
+        element_ids = list(getattr(self._result, "element_ids", []))
+        eid_label = (
+            element_ids[self._hottest_col]
+            if self._hottest_col < len(element_ids)
+            else "?"
+        )
+
+        ax.plot(times_arr, T_hist, color="#FF0000", linewidth=2.0)
+
+        if _CRIT_T <= T_global_max + y_pad:
             ax.axhline(
-                _CRIT_T, color="#ef5350", linewidth=0.8,
-                linestyle="--", alpha=0.8, label="600 °C",
+                _CRIT_T, color="#ffcc00", linewidth=0.9,
+                linestyle="--", alpha=0.85, label="600 °C",
             )
 
-        # Step marker (vertical line stored for cheap updates)
+        t_cur = float(times_arr[min(self._t_idx, len(times_arr) - 1)])
         self._tt_vline = ax.axvline(
-            t_cur, color="white", linewidth=1.0, linestyle=":", alpha=0.8
+            t_cur, color="#ffffff", linewidth=1.2, linestyle=":", alpha=0.9
         )
 
         ax.set_xlabel("Time [s]", color="white", fontsize=7)
         ax.set_ylabel("T [°C]", color="white", fontsize=7)
-        ax.set_title(f"EID {self._eid}", color="white", fontsize=8)
+        ax.set_title(f"Hottest: EID {eid_label}", color="white", fontsize=8)
         ax.tick_params(colors="white", labelsize=6)
-        ax.set_xlim(float(times[0]), float(times[-1]))
+        ax.set_xlim(float(times_arr[0]), float(times_arr[-1]))
+        ax.set_ylim(T_global_min - y_pad, T_global_max + y_pad)
         for sp in ax.spines.values():
             sp.set_edgecolor("#555555")
 
@@ -277,10 +302,24 @@ class ResultsPanel(QWidget):
         self._tt_canvas.draw_idle()
 
     def _update_tt_marker(self) -> None:
-        """Move the step-marker line on the T-t graph without full redraw."""
+        """Move the cursor line on the T-t graph without full redraw."""
         if self._tt_vline is None or self._result is None:
             return
         times = np.asarray(self._result.times)
         t_cur = float(times[min(self._t_idx, len(times) - 1)])
         self._tt_vline.set_xdata([t_cur, t_cur])
         self._tt_canvas.draw_idle()
+
+    def _on_tt_hover(self, event) -> None:
+        """Matplotlib motion callback: snap cursor to nearest step, emit signal."""
+        if self._tt_ax is None or event.inaxes is not self._tt_ax:
+            return
+        if self._result is None or event.xdata is None:
+            return
+        times = np.asarray(self._result.times)
+        idx = int(np.argmin(np.abs(times - event.xdata)))
+        # Move cursor immediately for snappy feel before the signal roundtrip
+        if self._tt_vline is not None:
+            self._tt_vline.set_xdata([float(times[idx]), float(times[idx])])
+            self._tt_canvas.draw_idle()
+        self.time_hovered.emit(idx)

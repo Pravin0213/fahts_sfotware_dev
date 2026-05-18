@@ -557,7 +557,8 @@ class SceneManager:
         T_row = T_field.T_centroid[idx]
         T_map = {eid: float(T_row[i]) for i, eid in enumerate(T_field.element_ids)}
 
-        lo, hi = float(np.nanmin(T_row)), float(np.nanmax(T_row))
+        T_all = np.asarray(T_field.T_centroid)
+        lo, hi = float(np.nanmin(T_all)), float(np.nanmax(T_all))
         clim = (lo, hi + 1.0) if hi - lo < 1.0 else (lo, hi)
         self.colour_by_temperature(T_map, clim=clim)
         self._update_time_label(float(t))
