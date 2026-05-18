@@ -1,0 +1,871 @@
+===========================================================================
+  FAHTS — FIRE AND HEAT TRANSFER SIMULATIONS
+  Core Solver Theory and Mathematics
+
+  Based on: SINTEF FAHTS User's Manual, Chapter 3 (Theory), 1994-10-15
+  Reference: "Integrated Analysis of Steel and Aluminium Structures Exposed to Fire"
+  Adapted for: FAHTS Python implementation (USFOS .fem format)
+
+  This document is the AUTHORITATIVE theory reference for the FAHTS solver.
+  All solver modules must conform to the formulations described here.
+  Do NOT deviate without updating this document and CLAUDE.md first.
+===========================================================================
+
+
+───────────────────────────────────────────────────────────────────────────
+1.  INTRODUCTION
+───────────────────────────────────────────────────────────────────────────
+
+FAHTS (Fire And Heat Transfer Simulations) is a Finite Element program for
+transient heat transfer analysis of structural steel members under fire.
+
+The structural description file used by USFOS (.fem format) is also used by
+FAHTS. Each 1D structural beam element is automatically re-meshed into a 2D
+heat transfer mesh in the cross-section plane. Shell elements are re-meshed
+into a 1D through-thickness mesh. Results (mean temperature, Y- and
+Z-gradient) are written back in USFOS BELTEMP format for collapse analysis.
+
+FAHTS is a Finite Element program for transient heat transfer using an
+IMPLICIT TIME INTEGRATION SCHEME to perform the incremental solution.
+
+Key design principles (from the original SINTEF code):
+  - Galerkin weighted residual method (not lumped parameter / lumped mass)
+  - Isoparametric Quad4 elements for 2D cross-section FEM
+  - Crank-Nicolson (θ=1/2) time integration — unconditionally stable,
+    second-order accurate
+  - Separate heat accumulation elements for hollow profiles (BOX, PIPE)
+  - Massless 1D insulation model through insulation thickness
+  - Full view-factor radiation model (planned Phase 5)
+
+
+───────────────────────────────────────────────────────────────────────────
+2.  GOVERNING EQUATION — STRONG FORM (§3.2.1)
+───────────────────────────────────────────────────────────────────────────
+
+Fourier's law for heat flow in 3D:
+
+  ρc ∂T/∂t = ∂/∂x(kx ∂T/∂x) + ∂/∂y(ky ∂T/∂y) + ∂/∂z(kz ∂T/∂z) + q  (3.2.1)
+
+Where:
+  ρ       Mass density                [kg/m³]
+  c       Heat capacity               [J/(kg·K)]
+  T       Temperature                 [K]
+  t       Time                        [s]
+  kx,y,z  Thermal conductivity        [W/(m·K)]
+  x,y,z   Spatial coordinates         [m]
+  q       Heat input to system        [W/m³]
+
+For the 2D cross-section FEM (applicable in the beam local y-z plane):
+
+  ρc ∂T/∂t = ∂/∂x(kx ∂T/∂x) + ∂/∂y(ky ∂T/∂y) + q           (3.2.2)
+
+NOTE: In 2D, the term q represents heat exchange over the surfaces
+per unit thickness. Specifically: q = qs/t, where qs is the net
+surface heat flux [W/m²] and t is the wall thickness. This means the
+surface boundary heat flux IS NOT a separate Neumann BC in the classical
+sense — it is incorporated as a distributed source in the 2D domain.
+
+Boundary conditions on domain Γ = Γ_T + Γ_q:
+
+  T - T̄ = 0                     on Γ_T  (prescribed temperature)  (3.2.3a)
+  kx ∂T/∂nx + ky ∂T/∂ny - q̄ = 0  on Γ_q  (prescribed heat flux)    (3.2.3b)
+
+where T̄ and q̄ are prescribed values at the true mathematical boundaries,
+and nx, ny are direction normals to boundary Γ.
+
+
+───────────────────────────────────────────────────────────────────────────
+3.  WEAK (GALERKIN) FORMULATION (§3.2.2)
+───────────────────────────────────────────────────────────────────────────
+
+The general problem is written as:
+
+  A(u) = Lu + p = 0    in domain Ω               (3.2.4)
+  B(u) = M + t = 0     on boundary Γ
+
+Using the Galerkin weighted-residual method (weight functions wj = Nj):
+
+  ∫[Ω] wj·A(NT) dΩ + ∫[Γ] w̄j·B(NT) dΓ = 0,   j = 1..n        (3.2.7)
+
+For the transient heat transfer problem:
+
+  A(T) = ∂/∂x(kx ∂T/∂x) + ∂/∂y(ky ∂T/∂y) + Q - c ∂T/∂t = 0
+  B(T) = T - T̄ = 0                                on Γ_T        (3.2.8)
+         kx ∂T/∂nx + ky ∂T/∂ny - q̄ = 0           on Γ_q
+
+Applying Green's theorem (integration by parts) and Galerkin Nj = wj:
+
+  ∫[Ω] [∂Nj/∂x kx ∂Ni/∂x + ∂Nj/∂y ky ∂Ni/∂y] dΩ · Ti(t)
+  + ∫[Ω] Nj·c·ρ·Ni dΩ · ∂Ti(t)/∂t
+  = ∫[Ω] Nj·Q dΩ + ∫[Γq] Nj·q̄ dl                              (3.2.13)
+
+This gives the element-level heat flow balance:
+
+  m·Ṫ + k·T = Qg + Qq = Q                                       (3.2.14)
+
+Element matrices and load vectors (integrated over element area Ac):
+
+  k = ∫[Ac] [∂Nj/∂x kx ∂Ni/∂x + ∂Nj/∂y ky ∂Ni/∂y] dA        (element conductivity matrix)
+    = ∫[Ac] Nx^T kx Nx + Ny^T ky Ny dA
+
+  m = ∫[Ac] ρc Nj Ni dA = ∫[Ac] ρc N^T N dA                    (element specific heat matrix)
+
+  Qg = ∫[Ac] Nj·Q dA = ∫[Ac] N·Q dA                            (element heat source vector)
+
+  Qq = ∫[LB] Nj·q̄ dl = ∫[LB] N·q̄ dl                          (element edge heat flux vector)
+                                                                   (3.2.15)
+
+The global system of equations (assembled from all elements):
+
+  M·Ṫ + K·T = Q(T)                                              (3.2.18/3.2.19)
+
+Where:
+  Ki    Thermal conductivity matrix at time i
+  Ti    Nodal temperature vector at time i
+  Mi    Mass matrix (heat capacity) at time i
+  Ṫi    Nodal temperature rate vector at time i
+  Qi    Nodal consistent heat vector at time i
+
+
+───────────────────────────────────────────────────────────────────────────
+4.  ROBIN BOUNDARY CONDITION (§3.2.2, Eq. 3.2.16-3.2.17)
+───────────────────────────────────────────────────────────────────────────
+
+When the boundary heat flux q̄ depends on temperature (Robin / convective-
+radiative BC):
+
+  q̄ = q̄_c + α(T_bound - T_s)                                  (3.2.16)
+
+Where:
+  q̄_c     Constant heat flow term (prescribed radiation flux)
+  α       "total" heat flow coefficient (W/m²·K)
+  T_bound  Element boundary temperature
+  T_s      Temperature of surrounding objects exchanging heat
+
+Inserting into the edge load integral:
+
+  ∫[Γq] Nj·q̄ dl = ∫[Γq] Nj·[q̄_c + α(T_bound - T_s)] dl
+                = ∫[Γq] Nj·(q̄_c - α·T_s) dl   ← load term (added to Q)
+                + ∫[Γq] Nj·α·T_bound dl          ← stiffness term (added to k)
+
+The stiffness contribution from the Robin BC:
+
+  mb = α · ∫[Γq] NB^T · NB dl
+
+where NB are the boundary shape functions (N evaluated at the boundary
+coordinates ξ or η). This is added to the element k matrix.
+
+The load contribution:
+  F_bc = ∫[Γq] N·(q̄_c - α·T_s) dl  → added to Q vector
+
+FOR RADIATION (nonlinear):
+  The radiation term σ·ε·(T_fire^4 - T_steel^4) must be linearised
+  for inclusion in the matrix. The SINTEF approach is:
+
+  q_rad = σ·ε·(T_fire_K^4 - T_K^4)  [W/m²]  (Eq. 3.2.4 of §3.2.4)
+
+  This is treated as an explicit load in the current step (semi-implicit),
+  or fully linearised as:
+    h_rad = σ·ε·(T_fire_K^2 + T_K^2)·(T_fire_K + T_K)
+  and added to α (treated as a Robin coefficient, updated each time step).
+
+FOR CONVECTION:
+  q_conv = h_conv·(T_fire - T_steel)  [W/m²]
+  Contribution: α = h_conv, T_bound = T_fire → standard Robin BC.
+
+IMPLEMENTATION NOTE FOR PYTHON SOLVER:
+  Current implementation (INCORRECT per SINTEF theory):
+    - Radiation: explicit → added entirely to b vector
+    - Convection: semi-implicit → added to A matrix
+  CORRECT implementation per SINTEF:
+    - Both terms should follow the same θ-method as the time integration
+    - For θ=1/2: use average of fire temperature at ti and ti-1
+    - Use linearised radiation coefficient h_rad in A matrix if fully implicit
+
+  In practice, keeping radiation semi-explicit (current approach) is
+  acceptable for moderate Δt. The key change required is the time integrator
+  (backward Euler → Crank-Nicolson).
+
+
+───────────────────────────────────────────────────────────────────────────
+5.  TIME DOMAIN INTEGRATION (§3.2.3) — CRANK-NICOLSON (θ=1/2)
+───────────────────────────────────────────────────────────────────────────
+
+The semidiscrete system after spatial FEM:
+
+  M(T)·Ṫ + K(T)·T = Q(T)                                       (3.2.19)
+
+Temperature is approximated as linear in time interval Δt:
+
+  T ≈ T(τ) = Ti-1 + (τ/Δt)·(Ti - Ti-1)                        (3.2.20)
+
+where τ = t - ti-1.
+
+Applying the weighted residual in the time domain and introducing the
+weight parameter θ (Zienkiewicz):
+
+  M·(Ti - Ti-1)/Δt + K·[Ti-1 + θ·(Ti - Ti-1)] = Q̄            (3.2.24)
+
+Where Q̄ is the averaged heat flux vector over the time interval:
+
+  Q̄ = Qi-1 + θ·(Qi - Qi-1)                                    (3.2.25)
+
+Rearranging to incremental form:
+
+  Mi·ΔT/Δt + Ki·Ti-1 + θ·Ki·ΔT = Q̄                           (3.2.26)
+
+  (Ki + 1/(θΔt)·Mi)·ΔT = (1/θ)·Q̄ - (1/θ)·Ki·Ti-1            (3.2.27)
+
+THE PRESENT FAHTS IMPLEMENTATION USES θ = 1/2 (CRANK-NICOLSON):
+  - Pure averaging over time interval Δt
+  - Unconditionally stable
+  - Order of accuracy BETTER THAN TWO
+  - Reference: Zienkiewicz
+
+With θ=1/2, and applying the equilibrium correction (substituting
+Qi-1 = Mi-1·Ṫi-1 + Ki-1·Ti-1), the incremental form becomes:
+
+  A · ΔTi = B                                                    (3.2.30)
+
+  where:
+    A = Ki + (2/Δt)·Mi                                           (system matrix)
+    B = Qi - Ki-1·Ti-1 + Mi-1·Ṫi-1                             (RHS)
+
+Solution:
+  ΔTi = A^{-1} · B
+  Ti = Ti-1 + ΔTi                                               (temperature update)
+
+Initial temperature rate (at t=0):
+  Ṫ0 = M0^{-1} · (Q0 - K0·T0)
+
+IMPORTANT NOTES:
+  - Ki, Mi, Qi are assembled at the CURRENT time step i (using properties
+    at mean temperature T_mean = (Ti-1 + Ti^guess)/2)
+  - Ki-1, Mi-1 are retained from the previous time step
+  - Ṫi-1 is the temperature rate from the previous step (initially 0)
+  - The nonlinearity from T-dependent properties is handled implicitly:
+    material properties are evaluated at the mean of Ti-1 and the
+    current best guess for Ti
+
+COMPARISON OF TIME INTEGRATION SCHEMES (θ values):
+  θ = 0     Forward (explicit) Euler     — conditionally stable
+  θ = 1/2   Crank-Nicolson / Trapezoidal — unconditionally stable, 2nd order ← FAHTS
+  θ = 2/3   Galerkin                     — unconditionally stable
+  θ = 1     Backward (implicit) Euler    — unconditionally stable, 1st order
+
+CURRENT PYTHON IMPLEMENTATION USES θ=1 (backward Euler) — MUST BE CHANGED TO θ=1/2.
+
+The backward Euler (θ=1) formula currently implemented:
+  A_current = C/dt + K
+  b_current = (C/dt)·T_prev + Q
+
+The Crank-Nicolson (θ=1/2) formula that MUST BE IMPLEMENTED:
+  A = K_i + (2/Δt)·M_i
+  B = Q_i - K_{i-1}·T_{i-1} + M_{i-1}·Ṫ_{i-1}
+  ΔT = A^{-1}·B
+  T_i = T_{i-1} + ΔT
+
+
+───────────────────────────────────────────────────────────────────────────
+6.  QUAD4 ISOPARAMETRIC ELEMENT (§3.3.1)
+───────────────────────────────────────────────────────────────────────────
+
+The element heat flow balance at element level:
+
+  m·Ṫi + k·Ti = qi                                               (3.3.1)
+
+6.1  Element Conductivity Matrix
+─────────────────────────────────
+When kx = ky = k (isotropic):
+
+  k = k · ∫[V] (Nx^T Nx + Ny^T Ny) dV
+
+where Nx = ∂N/∂x,  Ny = ∂N/∂y  are gradient matrices.
+
+6.2  Element Mass (Specific Heat) Matrix
+──────────────────────────────────────────
+  m = ρc · ∫[V] (N^T N) dV
+
+NOTE: The SINTEF FAHTS uses the CONSISTENT mass matrix in the formulation
+(not row-sum lumped). The consistent mass matrix gives better accuracy
+for the Crank-Nicolson scheme.
+
+CURRENT PYTHON IMPLEMENTATION uses row-sum lumped mass (diagonal).
+This is an acceptable engineering approximation; keep unless accuracy
+is insufficient.
+
+6.3  Consistent Heat Source Vector
+────────────────────────────────────
+  q = q · ∫[V] (N^T) dV
+
+6.4  Shape Functions (isoparametric Quad4)
+───────────────────────────────────────────
+Node numbering (SINTEF convention): 1=top-right, 2=top-left, 3=bottom-left,
+4=bottom-right in (ξ,η) space.
+
+  N1 = (1/4)(1 + ξ)(1 + η)
+  N2 = (1/4)(1 - ξ)(1 + η)
+  N3 = (1/4)(1 - ξ)(1 - η)
+  N4 = (1/4)(1 + ξ)(1 - η)
+
+ξ and η are non-dimensional element coordinates ranging from -1 to +1.
+
+Temperature field within element: T(ξ,η) = N·T (where T is nodal vector)
+Coordinates:  x(ξ,η) = N·x,   y(ξ,η) = N·y
+
+6.5  Jacobian Transformation
+──────────────────────────────
+Partial derivatives w.r.t. natural coordinates:
+
+  [∂/∂ξ]   [∂x/∂ξ   ∂y/∂ξ] [∂/∂x]
+  [∂/∂η] = [∂x/∂η   ∂y/∂η] [∂/∂y]  = J · Δx,y
+
+where J is the Jacobian matrix (2×2 for 2D case).
+
+Inverse relationship:
+
+  [∂/∂x]             [∂y/∂η   -∂y/∂ξ] [∂/∂ξ]
+  [∂/∂y] = (1/det J) [-∂x/∂η   ∂x/∂ξ] [∂/∂η]  = J^{-1} · Δξ,η
+
+Shape function x-derivative:
+  Nx = (1/det J) · (∂y/∂η · N,ξ - ∂y/∂ξ · N,η)
+
+Volume integral expressed in ξ and η:
+  ∫[V] dV = ∫∫ h(ξ,η) · det(J) dξdη
+
+where h(ξ,η) = N·h is the element thickness (may vary over element;
+h is the corner thickness vector).
+
+6.6  Numerical Integration
+───────────────────────────
+Element matrices are integrated numerically using GAUSSIAN INTEGRATION.
+Standard: 2×2 Gauss quadrature (4 points at ξ,η = ±1/√3, weight=1 each).
+
+For the cross-section 2D mesh:
+  h(ξ,η) = wall_thickness (constant per element in BOX/PIPE mesher)
+  So det(J) is the effective area factor.
+
+For the edge integrals (Robin BC on outer/inner boundaries):
+  1D Gauss rule along each exposed edge.
+
+
+───────────────────────────────────────────────────────────────────────────
+7.  ELEMENT TYPES AND PROFILE MESHING (§3.4.1)
+───────────────────────────────────────────────────────────────────────────
+
+The USFOS structural model is re-meshed into heat transfer elements.
+Each 1D beam element → 2D cross-section mesh.
+Each shell element → 1D through-thickness mesh.
+
+The meshing strategy and energy exchange model depend on the profile type:
+
+7.1  Tubular Members (PIPE)
+────────────────────────────
+  Mesh: Polar annular Quad4 mesh (n_arc × n_radial elements)
+  Topology: 1 INSIDE surface + 1 OUTSIDE surface
+  Fire exposure: OUTSIDE ONLY (inside is sealed hollow cavity)
+  Insulation (if present): on outside surface only
+  Heat accumulation element: YES (generated — profile is hollow)
+
+7.2  Rectangular Hollow Sections (BOX/RHS)
+────────────────────────────────────────────
+  Mesh: Wall-by-wall Quad4 mesh through wall thickness
+  Topology: 1 INSIDE surface + 1 OUTSIDE surface
+  Fire exposure: OUTSIDE ONLY (inside is sealed hollow cavity)
+  Insulation (if present): on outside surface only
+  Heat accumulation element: YES (generated — profile is hollow)
+
+  Wall-by-wall strategy:
+    - Bottom wall: spans full width (W), thickness T_bot
+    - Top wall:    spans full width (W), thickness T_top
+    - Left wall:   spans inner height only, thickness T_side
+    - Right wall:  spans inner height only, thickness T_side
+  Node deduplication at wall corners (1e-10 m tolerance).
+
+7.3  I/H Profiles (IHPROFIL)
+──────────────────────────────
+  Mesh: 3-patch Quad4 mesh (top flange + web + bottom flange)
+  Topology: 2 OUTSIDE surfaces (open profile — no enclosed void)
+  Fire exposure: BOTH outside surfaces
+  Insulation (if present): BOTH surfaces covered
+  Heat accumulation element: NOT generated (open profile)
+
+  Note: For I-profiles, the web interior faces are also exposed to fire
+  since there is no enclosed cavity. All surfaces are effectively "outside".
+
+7.4  Plate / Shell Elements (QUADSHEL, TRISHELL)
+──────────────────────────────────────────────────
+  Mesh: 1D through-thickness nodes (n_layers+1 nodes, n_layers rod elements)
+  Topology: 2 OUTSIDE surfaces (open — top and bottom faces)
+  Fire exposure: BOTH surfaces (or one, depending on fire zone)
+  Heat accumulation element: NOT generated (open)
+  Solver: Shell1DSolver (1D backward Euler rod FEM)
+
+  Node 0 = outer (fire side), node n_layers = inner (adiabatic by default)
+
+
+───────────────────────────────────────────────────────────────────────────
+8.  HEAT ACCUMULATION ELEMENT (§3.3.5)
+───────────────────────────────────────────────────────────────────────────
+
+For HOLLOW profiles (BOX, PIPE), the enclosed gas/air has thermal inertia
+that slows the heat rise on the inner wall surface. A "Heat Accumulation
+Element" captures this thermal mass without solving heat transfer inside
+the cavity (which is complex and would require modelling convection).
+
+The heat capacity is calculated as:
+
+  m_i = Ai · l · ρi / n
+
+where:
+  m_i   Lumped mass at node i [J/K]
+  Ai    Internal cross-section area [m²]
+  l     Length of structural member [m]
+  ρi    Mass density of interior fluid (air: ρ≈1.2 kg/m³, c≈1000 J/kg·K,
+        so ρ·c ≈ 1200 J/(m³·K)) [kg·c J/(m³·K)]
+  n     Number of element nodes at inner surface
+
+The element has NO conduction terms — only a lumped mass (diagonal) matrix:
+
+  m = diag(m_1, m_2, ..., m_n)   [all off-diagonal = 0]
+
+This mass is added to the diagonal of the global mass matrix M at the
+indices corresponding to the inner surface nodes of the hollow section.
+
+IMPLEMENTATION STATUS: NOT YET IMPLEMENTED in Python solver.
+REQUIRED CHANGE: In analysis_runner.py, after building mesh for BOX/PIPE,
+compute Ai = inner area, distribute m_i = Ai·l·ρ_air·c_air/n_inner_nodes
+over inner surface node DOFs, and add to assembled M_lumped.
+
+Approximate inner area:
+  BOX:  Ai = (W - 2·T_side) × (H - T_top - T_bot)
+  PIPE: Ai = π · (R_inner)²
+
+
+───────────────────────────────────────────────────────────────────────────
+9.  ENERGY EXCHANGE MODEL (§3.3.2)
+───────────────────────────────────────────────────────────────────────────
+
+The net element heat flux q has contributions from multiple terms.
+The applicable terms depend on the profile type:
+
+9.1  Hollow Profiles (BOX, PIPE) — 1 inside + 1 outside
+──────────────────────────────────────────────────────────
+Without insulation:
+  q = E_re + E_ce + E_ri + E_ci
+
+With insulation on outside:
+  q = E_l + E_ri + E_ci
+
+Where:
+  E_re  Net surface radiant energy at EXTERIOR side [W/m²]
+  E_ce  Net surface convection energy at EXTERIOR side [W/m²]
+  E_ri  Net surface radiant energy at INTERIOR side [W/m²]
+  E_ci  Net surface convection energy at INTERIOR side [W/m²]
+  E_l   Net energy 'leakage' through the insulation [W/m²]
+
+CURRENT IMPLEMENTATION: Inner surface is treated as fully adiabatic
+(E_ri = 0, E_ci = 0). This is conservative (overestimates inner T rise)
+and acceptable for engineering use. The heat accumulation element
+partially compensates for missing inner surface BC.
+
+9.2  Open Profiles (I/H, Plate/Shell) — 2 outsides
+─────────────────────────────────────────────────────
+Without insulation:
+  q = E_re1 + E_ce1 + E_re2 + E_ce2
+
+With insulation:
+  q = E_l1 + E_l2
+
+Where indices 1 and 2 refer to the two exposed outside surfaces.
+
+
+───────────────────────────────────────────────────────────────────────────
+10.  SURFACE RADIANT ENERGY BALANCE (§3.2.4)
+───────────────────────────────────────────────────────────────────────────
+
+Emitted heat flux from surface 1 (grey body):
+  E_e1 = σ · ε_s1 · T_s1^4
+
+where σ = 5.67×10⁻⁸ W/(m²·K⁴) (Stefan-Boltzmann constant)
+
+Surface 1 absorbs a fraction of surface 2 emittance:
+  E_sa = α_s1 · E_s2
+
+Net radiation flux from surface 1 (general grey body):
+  E_s = σ·(ε_s1·T_s1^4 - α_s1·ε_s2·T_s2^4)
+
+Assuming grey-body conditions (α_i = ε_i):
+  E_s = σ·ε_s1·(T_s1^4 - ε_s2·T_s2^4)
+
+Assuming surface 2 is BLACK BODY (ε_s2 = 1.0):
+  E_s = σ·ε_s1·(T_s1^4 - T_s2^4)
+
+For n surfaces visible from surface 1 (view factors F_1i):
+  E_s = ε_s1·σ·(T_s1^4 - Σ[i=1..n] F_1i·ε_si·T_si^4)
+
+A negative E_s means NET ABSORPTION (net heat flow INTO surface 1).
+
+IMPLEMENTATION:
+Current FAHTS Python uses:
+  q_rad = ε_m · σ · (T_fire_K^4 − T_steel_K^4)   [W/m²]
+Where ε_m = ε_fire × ε_steel (resultant emissivity).
+This is the EN 1993-1-2 §3.1 formulation — equivalent to the above
+for two-surface grey-body exchange.
+
+The emissivity of fire gas is taken as 1.0 in time-dependent environmental
+temperature mode (ISO/HC fire curves), matching §3.5.3 and §3.5.7/3.5.8.
+
+
+───────────────────────────────────────────────────────────────────────────
+11.  SURFACE CONVECTION ENERGY BALANCE (§3.2.5)
+───────────────────────────────────────────────────────────────────────────
+
+  E_c = C · (T_s - T_g)   [W/m²]
+
+Where:
+  E_c   Heat flux from surface to gas [W/m²]
+  C     Convection number [W/(m²·K)]
+  T_s   Temperature of surface [K]
+  T_g   Temperature of surrounding gas [K]
+
+C depends on:
+  - Velocity of surrounding gas
+  - Thermal conductivity of gas
+  - Reynolds number at current gas temperature
+
+Standard values (EN 1993-1-2):
+  h_conv = 25 W/(m²·K)  for cellulosic (ISO 834) fire
+  h_conv = 50 W/(m²·K)  for hydrocarbon fire
+
+
+───────────────────────────────────────────────────────────────────────────
+12.  INSULATION MODEL (§3.3.3) — MASSLESS TYPE 1
+───────────────────────────────────────────────────────────────────────────
+
+The quadrilateral heat transfer element may be 'protected' by thermal
+insulation on one or both surfaces. The resultant energy 'leakage' through
+the insulation is what matters for heat transfer to the steel section.
+
+ASSUMPTIONS:
+  1. Heat flow through insulation is 1D (thickness << surface extent)
+  2. Main structure temperatures increase more slowly than insulation
+     exposed side → previous step T_e is used as fixed inner BC
+  3. Two types: massless (type 1) and massive (transient 1D rod)
+
+MASSLESS INSULATION (TYPE 1):
+  Energy leakage: E_l = K(T) · (T_e - T_s)
+  where K(T) = resultant thermal conductance [W/(m²·K)]
+  and characteristic temperature: T = (T_e + T_s) / 2
+
+When exposed to fire (gas temperature T_g, emissivity ε_g):
+  E_l = E_s + E_c (balance at outer insulation surface)
+
+  K(T)·(T_e - T_s) = σ·ε_s·(T_s^4 - ε_g·T_g^4) + C·(T_s - T_g)
+
+Rearranging to 4th-order polynomial in T_s:
+  σ·ε_s·T_s^4 + (K+C)·T_s - (K·T_e + σ·ε_s·ε_g·T_g^4 + C·T_g) = 0
+
+This is solved (e.g., by Newton-Raphson) to find T_s, then:
+  E_l = K(T)·(T_e - T_s)   is the heat flux into the steel section.
+
+IMPLEMENTATION STATUS: NOT YET IMPLEMENTED.
+Planned for Phase 5 (insulation layer model).
+
+
+───────────────────────────────────────────────────────────────────────────
+13.  VIEW FACTORS (§3.3.4)
+───────────────────────────────────────────────────────────────────────────
+
+The view factor F_ij is defined as the fraction of total radiant energy
+that leaves surface i which arrives directly on surface j.
+
+Definition:
+  F_ij = (1/Ai) ∫∫[Ai,Aj] cos(θi)·cos(θj) / (π·r²) dAj·dAi
+
+Where:
+  Ai, Aj   Area of surfaces i and j [m²]
+  r        Distance between differential surfaces [m]
+  θi       Angle between surface normal Ni and the radius to dAj
+  θj       Angle between surface normal Nj and the radius to dAi
+  Ni, Nj   Surface normals of dAi and dAj
+
+Simplified form (valid when areas are small compared to distance r):
+  F_ij = Aj · cos(θi) · cos(θj) / (π · r²)
+
+Numerical integration (for arbitrarily-shaped quadrilaterals):
+  Subdivide surface 1 into n sub-areas, surface 2 into m sub-areas:
+
+  F_12 = (1/A1) · Σ[i=1..n] Σ[j=1..m] cos(θi)·cos(θj)/(π·r²) · Ai·Aj
+
+CURRENT IMPLEMENTATION: Binary midpoint-in-box exposure (Phase 2 simplification).
+Phase 5 will implement the numerical integration approach above.
+Phase 5 will also implement shadow/obstruction detection (ray casting).
+
+The radiation net flux with view factors to n visible surfaces:
+  E_s = ε_s1·σ·(T_s1^4 - Σ[i=1..n] F_1i·ε_si·T_si^4)
+
+
+───────────────────────────────────────────────────────────────────────────
+14.  TEMPERATURE FIELD LINEARIZATION FOR BELTEMP OUTPUT (§3.4.2)
+───────────────────────────────────────────────────────────────────────────
+
+USFOS requires temperature loads in linearized form (mean + bilinear
+gradient), not the full 2D nodal field. The FAHTS output must therefore
+produce equivalent linearized temperature parameters.
+
+The cross-section temperature distribution from 2D FEM is:
+  t(x,y,z) = t0 + t̄(x,y,z) = t0 + βy·z + βz·y               (§3.4.2)
+
+The equivalent temperature state is characterised by:
+  ΔT0    uniform temperature change
+  Δβy    temperature gradient about y-axis (bending about y)
+  Δβz    temperature gradient about z-axis (bending about z)
+
+These equivalent parameters produce the same thermal expansion forces
+in USFOS as the true 2D temperature distribution calculated by FAHTS.
+
+The equivalent nodal expansion forces are found from:
+
+  Es·Iz·Δβ ∫[0..L] N^θ,xx dx = ∫∫[0..L,A] E(x,y,z)·Δt(x,y,z)·z·N^θ,xx dA dx  (for z-bending)
+  Es·Iy·Δβ ∫[0..L] N^θ,xx dx = ∫∫[0..L,A] E(x,y,z)·Δt(x,y,z)·y·N^θ,xx dA dx  (for y-bending)
+  Es·A·Δβ  ∫[0..L] N^u,x dx  = ∫∫[0..L,A] E(x,y,z)·Δt(x,y,z)·N^u,x dA dx   (for axial)
+
+BELTEMP FILE FORMAT (USFOS):
+  Values are INCREMENTAL temperature changes, accumulated from T0 = 20°C.
+  Current FAHTS export writes:
+    - BELTEMP mean temperature (centroid T per element)
+    - Zero Y/Z gradients (linearization not yet computed)
+  Future: compute area-weighted mean and first moments for βy, βz.
+
+
+───────────────────────────────────────────────────────────────────────────
+15.  HEAT SOURCES (§3.5)
+───────────────────────────────────────────────────────────────────────────
+
+15.1  Element Flux (§3.5.1)
+─────────────────────────────
+Prescribed heat flux [W/m²] applied to all heat transfer elements of the
+specified structural element(s). Added directly to Q vector.
+
+15.2  Nodal Boundary Temperature (§3.5.2)
+───────────────────────────────────────────
+Prescribed temperature at structural node(s). All HT mesh nodes connected
+to those structural nodes receive the prescribed temperature as Dirichlet BC
+(penalty method: K[i,i] += β; Q[i] += β·T_prescribed).
+
+15.3  Time-Dependent Environmental Temperature (§3.5.3)
+─────────────────────────────────────────────────────────
+User specifies a fire temperature history T_g(t) as a piecewise-linear
+time series. All exposed surfaces (outsides) are subjected to:
+  - Radiation: q_rad = σ·ε_s·(T_s^4 - T_g^4)  (ε_gas = 1.0)
+  - Convection: q_conv = h·(T_g - T_s)
+Corresponds to the FireZone implementation in FAHTS Python.
+
+15.4  ISO Fire — ISO-834 (§3.5.7)
+────────────────────────────────────
+  T(t) = 20 + 345·log10(8t+1)   [°C, t in minutes]
+Equivalent to environmental temperature type with ISO curve.
+
+15.5  HC Fire — Hydrocarbon (§3.5.8)
+───────────────────────────────────────
+  T(t) = 20 + 1080·(1 - 0.325·e^{-0.167t} - 0.675·e^{-2.5t})  [°C, t in minutes]
+Defined by NPD standard for offshore hydrocarbon fires.
+
+15.6  Time-Dependent Concentrated Source (§3.5.4)
+────────────────────────────────────────────────────
+Point source at a location, emitting total energy E(t) [J/s = W].
+Heat flux received by element i:
+  q_i = E · cos(θi) / (4π · ri²)
+
+Where:
+  E    Total energy emittance from source [W]
+  ri   Distance from source to element midpoint [m]
+  θi   Angle between ray and element surface normal
+
+Corresponds approximately to RadiationBall in FAHTS Python, but RadiationBall
+uses a prescribed two-zone flux model (USFOS USERFLUX type 0) rather than
+this point-source formula.
+
+15.7  Time-Dependent Line Source (§3.5.5)
+───────────────────────────────────────────
+Line source (cylinder/cone shape) with energy emittance per unit length [J/(m·s)].
+Discretized into n point sources: ΔE = ΔL × e.
+Total flux to element: Q = Σ[i=1..n] q_i(E_i, r_i, θ_i).
+For elements INSIDE the cylinder, cos(θ) is set to 1.0.
+
+15.8  USERFLUX Type 0 — RadiationBall (USFOS Extension)
+──────────────────────────────────────────────────────────
+USFOS USERFLUX type 0 implements a two-zone spherical fire source:
+  Format: USERFLUX 0 <set> cx cy cz r1 flux1 r2 flux2
+
+Where:
+  (cx,cy,cz)  Centre of radiation ball [m, global coords]
+  r1          Inner zone radius [m]
+  flux1       Prescribed flux in inner zone [W/m²]
+  r2          Outer zone radius [m]
+  flux2       Prescribed flux in outer zone [W/m²]
+
+Flux assignment:
+  d ≤ r1:       q = flux1  (inner zone, maximum intensity)
+  r1 < d ≤ r2:  q = flux2  (outer zone, reduced intensity)
+  d > r2:       q = 0      (no exposure)
+
+This is a PRESCRIBED FLUX (not radiated from a temperature source), so:
+  - epsilon_m = 0 (no Stefan-Boltzmann radiation term — already included)
+  - h_conv = 0    (convection not modelled for this source type)
+  - The flux q is added directly to the load vector Q
+
+
+───────────────────────────────────────────────────────────────────────────
+16.  MATERIAL PROPERTIES (EN 1993-1-2 Annex C)
+───────────────────────────────────────────────────────────────────────────
+
+Steel thermal properties are temperature-dependent per EN 1993-1-2:
+
+Thermal conductivity k(T) [W/(m·K)]:
+  T ≤ 800°C:  k = 54 - 0.0333·T
+  T > 800°C:  k = 27.3
+
+Specific heat cp(T) [J/(kg·K)]:
+  T < 600°C:  cp = 425 + 0.773·T - 1.69e-3·T² + 2.22e-6·T³
+  600≤T<735:  cp = 666 + 13002/(738-T)
+  735≤T<900:  cp = 545 + 17820/(T-731)
+  T ≥ 900°C:  cp = 650
+
+Critical point: cp has a peak at ~735°C (austenite-ferrite phase transformation).
+
+Density: ρ = 7850 kg/m³ (constant, per EN 1993-1-2)
+
+USFOS material configuration (for benchmark comparison):
+  ρ = 7850 kg/m³
+  c_ref = 510 J/(kg·K) (baseline, with T-dependent multiplier)
+  k_ref = 50 W/(m·K)   (baseline, with T-dependent multiplier)
+  emiss = 0.85
+
+NOTE: FAHTS Python uses EN 1993-1-2 Annex C full tables.
+USFOS uses thermpar × tempdepy multiplier tables (different interpolation).
+Expect 5–15% difference in results due to material property differences.
+
+
+───────────────────────────────────────────────────────────────────────────
+17.  SOLUTION ALGORITHM OVERVIEW
+───────────────────────────────────────────────────────────────────────────
+
+Per time step i-1 → i (Crank-Nicolson, θ=1/2):
+
+  1. Evaluate K, M, Q at mean temperature T_mean = (Ti-1 + Ti^guess)/2
+     (initial guess: Ti^guess = Ti-1 + Ṫi-1 · Δt)
+
+  2. Assemble global K_i, M_i from element contributions
+     Add Robin BC terms to K_i (convection/linearised radiation)
+     Add heat accumulation masses to diagonal of M_i (BOX, PIPE only)
+
+  3. Evaluate load vector Q_i:
+     - Element surface flux contributions (radiation explicit + convection)
+     - Heat source contributions (fire zone, rad ball, etc.)
+
+  4. Form RHS:
+     B = Q_i - K_{i-1}·T_{i-1} + M_{i-1}·Ṫ_{i-1}
+
+  5. Form system matrix:
+     A = K_i + (2/Δt)·M_i
+
+  6. Solve: A·ΔT = B  (scipy.sparse.linalg.spsolve)
+
+  7. Update:
+     T_i = T_{i-1} + ΔT
+     Ṫ_i = (2/Δt)·ΔT - Ṫ_{i-1}    [from linear T(τ) approximation]
+
+  8. Store T_i, Ṫ_i for next step
+     Store K_i, M_i as K_{i-1}, M_{i-1} for next step
+
+  9. Advance to next time step.
+
+CONVERGENCE: The Crank-Nicolson algorithm is unconditionally stable and
+converges for any Δt. A single Picard iteration per step is acceptable for
+moderate Δt and smooth k(T), cp(T) functions. For large Δt or near the
+steel cp peak (735°C), consider 2-3 Picard iterations.
+
+
+───────────────────────────────────────────────────────────────────────────
+18.  IMPLEMENTATION DELTA — CURRENT vs. REQUIRED
+───────────────────────────────────────────────────────────────────────────
+
+The following table documents deviations of the current Python implementation
+from the SINTEF FAHTS theory, in order of priority for the next agent:
+
+PRIORITY 1 — CRITICAL (changes solver physics):
+─────────────────────────────────────────────────
+A. TIME INTEGRATOR: Backward Euler (θ=1) → Crank-Nicolson (θ=1/2)
+   Files:  fahts/core/heat/solver/time_integrator.py
+           fahts/core/heat/solver/shell_1d_solver.py
+   Change: Replace A = C/dt + K, b = C/dt·T_prev + Q
+       with: A = K_i + 2/dt·M_i, B = Q_i - K_prev·T_prev + M_prev·Ṫ_prev
+   Note:   Must track K_prev, M_prev, Ṫ_prev between steps.
+   Note:   Initial Ṫ_0 = M_0^{-1}·(Q_0 - K_0·T_0)
+
+B. HEAT ACCUMULATION ELEMENT: Missing for BOX/PIPE hollow profiles
+   Files:  fahts/core/heat/solver/analysis_runner.py
+           fahts/core/heat/solver/fem_2d_section.py (new helper)
+   Change: After building mesh for BOX or PIPE element, compute:
+             Ai = inner hollow area (BOX: (W-2Tside)(H-Ttop-Tbot); PIPE: πRi²)
+             l  = beam element length
+             n_inner = number of inner surface nodes
+             m_acc = Ai · l · ρ_air · c_air / n_inner  (≈ Ai·l·1200/n_inner)
+           Add m_acc to M_lumped at each inner surface node index.
+
+PRIORITY 2 — MODERATE (improves accuracy):
+────────────────────────────────────────────
+C. TEMPERATURE LINEARIZATION: Compute βy, βz gradients for BELTEMP output
+   Files:  fahts/core/io/results_writer.py
+           fahts/core/results/post_processor.py
+   Change: After solving, compute area-weighted first moments:
+             βz = Σ(T_k · y_k · A_k) / Iz   (gradient about z-axis)
+             βy = Σ(T_k · z_k · A_k) / Iy   (gradient about y-axis)
+   These values go into BELTEMP columns 4 and 5.
+
+D. MASS MATRIX: Consistent vs. lumped
+   Files:  fahts/core/heat/solver/fem_2d_section.py
+   Status: Current lumped mass is acceptable; consistent mass would give
+           better accuracy with Crank-Nicolson. Low priority.
+
+PRIORITY 3 — FUTURE PHASES:
+──────────────────────────────
+E. VIEW FACTORS: Numerical integration (Phase 5)
+F. INSULATION MODEL: 1D massless type 1 solver (Phase 5)
+G. SHADOW DETECTION: Ray-casting occlusion (Phase 5)
+H. CONCENTRATED/LINE SOURCE: Point source and line source heat inputs (Phase 5)
+I. KAMELEON/FIREINT interface: CFD fire simulation coupling (future)
+
+
+───────────────────────────────────────────────────────────────────────────
+19.  REFERENCES
+───────────────────────────────────────────────────────────────────────────
+
+[1]  SINTEF Group (1994). FAHTS User's Manual, Chapter 3: Theory.
+     Report i:\ka\pro\251673\um-03.w51, dated 1994-10-15.
+     — PRIMARY REFERENCE. This document is derived entirely from Chapter 3.
+
+[2]  Zienkiewicz, O.C. & Taylor, R.L. The Finite Element Method.
+     — Time integration θ-method; Crank-Nicolson stability analysis.
+
+[3]  EN 1993-1-2 (2005). Eurocode 3: Design of steel structures.
+     Part 1-2: General rules — Structural fire design.
+     Annex C: Temperature dependent thermal properties of steel.
+     — Material property tables for k(T) and cp(T).
+
+[4]  ISO 834: Fire-resistance tests — Elements of building construction.
+     — Standard cellulosic fire curve T = 20 + 345·log10(8t+1).
+
+[5]  NPD Hydrocarbon fire curve standard.
+     — T = 20 + 1080·(1-0.325·e^{-0.167t}-0.675·e^{-2.5t}).
+
+[6]  Shah, R.K. & Lockwood, F.C.
+     "The Discrete Transfer Method for radiation."
+     — Used in KAMELEON/FIREINT interface (§3.5.6).
+
+===========================================================================
+  End of FAHTS Core Solver Theory — v2.0 (updated 2026-05-18)
+  Based on SINTEF FAHTS User's Manual (original 1994 code)
+===========================================================================

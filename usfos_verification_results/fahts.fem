@@ -1,0 +1,90 @@
+'
+Head  
+
+
+TimeUnit  Min
+initemp       20
+TOLMERGE   1E-5
+Lin_rule 2
+
+#pushDown
+
+'         EndTime   nStep   ResultInc
+TempSim     15        300      1
+
+MESHBOX       8  4  4  4
+
+MESHIPRO      8  4  4  4
+
+
+
+
+USERFLUX   0  1   343   484   64  5  350000  100   1500
+
+
+'****************************************************
+'Thermal properties for Carbon Steel from Eurocode 3: EN 1993-1-2
+'****************************************************
+'
+'          ThermID    rho(kg/m3)  c (J/kgK)  k (W/mK)   emiss   dummy
+thermpar     1   7850      510.0      0      0.85       100
+thermpar     2   7850      510.0      50.0      0.85       100
+thermpar     3   7850      510.0      50.0      0.85       100
+thermpar     4   7850      510.0      50.0      0.85       100
+thermpar     5   7850      510.0      50.0      0.85       100
+thermpar     6   7850      510.0      0         0.85       100
+
+
+'
+'            ThermID  DepRho  Dep_c Dep_k  Dep_e
+thermpar     1   0     100    200     0
+thermpar     2   0     100    200     0
+thermpar     3   0     100    200     0
+thermpar     4   0     100    200     0
+thermpar     5   0     100    200     0
+thermpar     6   0     100    200     0
+
+
+'
+'SPECIFIC HEAT
+'            DepID   T1   fac1  T2  fac2 ....
+tempdepy      100								! temperature dependency for spesific heat capacity
+'T      factor
+0	0.792
+100	0.943
+200	1.018
+300	1.094
+400	1.131
+500	1.282
+600	1.508
+650	1.584
+685	1.697
+731	9.804
+750	2.790
+773	1.998
+807	1.471
+870	1.282
+1300	1.282
+
+'
+
+'            DepID   T1   fac1  T2  fac2 ....
+tempdepy      200								! temperature dependency for conductivity
+'T      factor
+0	1.084
+100	1.019
+200	0.949
+300	0.874
+400	0.809
+500	0.744
+600	0.679
+700	0.614
+800	0.548
+900	0.548
+1000	0.548
+1100	0.548
+1200	0.548
+1300	0.548
+
+
+

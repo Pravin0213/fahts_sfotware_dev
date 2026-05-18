@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_rad_ball.py tests/test_ihprofil_mesher.py tests/test_pipe_mesher.py tests/test_beltemp_parser.py tests/test_shell_1d_solver.py -v --tb=short)",
+      "Bash(python -m pytest tests/test_pipe_mesher.py::TestPipeMesherAreaConservation::test_total_area_matches_section_area -v --tb=long)",
+      "Bash(python -m pytest tests/ -q --tb=short)",
+      "Bash(python -m pytest tests/test_rad_ball.py tests/test_analysis_runner.py -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_main_window.py --ignore=tests/test_model_tree_panel.py --ignore=tests/test_results_panel.py --ignore=tests/test_properties_panel.py --ignore=tests/test_scene_manager.py --ignore=tests/test_scene_manager_phase4.py --ignore=tests/test_recent_files.py)",
+      "Bash(python -m pytest tests/test_usfos_benchmark.py -v -k \"not slow\")",
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_usfos_benchmark.py)",
+      "Bash(python tests/test_usfos_benchmark.py)"
+    ]
+  }
+}

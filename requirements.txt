@@ -1,0 +1,24 @@
+# FAHTS — Fire Analysis and Heat Transfer Software
+# Install: pip install -r requirements.txt
+
+# GUI framework
+PyQt6>=6.6.0
+
+# 3D rendering (VTK-based)
+pyvista>=0.44.0
+pyvistaqt>=0.11.0
+
+# Numerics
+numpy>=2.0.0
+scipy>=1.14.0
+
+# Results tables and export
+pandas>=2.2.0
+openpyxl>=3.1.0          # Excel export
+
+# 2D plots embedded in Qt
+matplotlib>=3.9.0
+
+# Development / testing
+pytest>=8.0.0
+pytest-qt>=4.4.0         # Qt testing helpers
