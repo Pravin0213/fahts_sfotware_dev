@@ -46,6 +46,7 @@ class AnalysisWorker(QThread):
     """
 
     progress:  pyqtSignal = pyqtSignal(int, int, int)   # current, total, eid
+    log_line:  pyqtSignal = pyqtSignal(str)             # USFOS-style output line
     finished:  pyqtSignal = pyqtSignal(object)           # TemperatureField
     error:     pyqtSignal = pyqtSignal(str)
     cancelled: pyqtSignal = pyqtSignal()
@@ -79,6 +80,7 @@ class AnalysisWorker(QThread):
                 config=self._config,
                 progress_cb=lambda cur, tot, eid: self.progress.emit(cur, tot, eid),
                 cancel_check=self._cancel_event.is_set,
+                log_cb=lambda line: self.log_line.emit(line),
             )
             self.finished.emit(result)
         except AnalysisCancelledError:

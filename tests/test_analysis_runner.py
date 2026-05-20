@@ -142,22 +142,23 @@ class TestProgressCallback:
         assert len(calls) >= 1
 
     def test_callback_receives_correct_total(self):
-        """total should equal 1 (one element) for our fixture."""
+        """total should equal n_steps (2 for dt=60, t_end=120) for our fixture."""
         totals = []
         run_analysis(
             _make_model(), [_make_zone()], _make_config(),
             progress_cb=lambda cur, tot, eid: totals.append(tot),
         )
-        assert all(t == 1 for t in totals)
+        # n_steps = round(t_end / dt) = round(120 / 60) = 2
+        assert all(t == 2 for t in totals)
 
-    def test_callback_receives_element_id(self):
+    def test_callback_receives_minus_one_eid(self):
+        """eid is always -1 in the time-step-outer loop (no per-element ticks)."""
         eids = []
         run_analysis(
             _make_model(), [_make_zone()], _make_config(),
             progress_cb=lambda cur, tot, eid: eids.append(eid),
         )
-        # The first tick passes the real eid; the final "done" tick passes -1
-        assert 101 in eids
+        assert all(e == -1 for e in eids)
 
 
 # ── Cancellation ─────────────────────────────────────────────────────────────

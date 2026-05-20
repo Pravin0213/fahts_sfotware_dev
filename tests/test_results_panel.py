@@ -107,8 +107,8 @@ class TestConstruction:
     def test_tt_canvas_hidden_initially(self, panel):
         assert panel._tt_canvas.isHidden()
 
-    def test_tt_vline_none_initially(self, panel):
-        assert panel._tt_vline is None
+    def test_tt_marker_none_initially(self, panel):
+        assert panel._tt_marker is None
 
 
 # ── clear() ───────────────────────────────────────────────────────────────────
@@ -142,9 +142,9 @@ class TestClear:
         loaded_panel.clear()
         assert not loaded_panel._tt_placeholder.isHidden()
 
-    def test_clear_resets_tt_vline(self, loaded_panel):
+    def test_clear_resets_tt_marker(self, loaded_panel):
         loaded_panel.clear()
-        assert loaded_panel._tt_vline is None
+        assert loaded_panel._tt_marker is None
 
 
 # ── show_section() — cross-section ────────────────────────────────────────────
@@ -239,27 +239,30 @@ class TestShowSectionTT:
         panel.show_section(1, model, result)
         assert panel._tt_placeholder.isHidden()
 
-    def test_tt_vline_set_after_show(self, panel):
+    def test_tt_marker_set_after_show(self, panel):
         model = _make_model()
         result = _make_result()
         panel.show_section(1, model, result)
-        assert panel._tt_vline is not None
+        assert panel._tt_marker is not None
 
-    def test_tt_vline_at_correct_time(self, panel):
+    def test_tt_marker_at_correct_time(self, panel):
         model = _make_model()
         result = _make_result(n_steps=5)
         panel.show_section(1, model, result, t_idx=2)
         expected_t = float(result.times[2])
-        assert abs(panel._tt_vline.get_xdata()[0] - expected_t) < 1e-6
+        assert abs(panel._tt_marker.get_xdata()[0] - expected_t) < 1e-6
 
-    def test_tt_canvas_hidden_when_eid_not_in_element_ids(self, panel):
-        """eid in T_section but not in element_ids → T-t canvas hidden."""
+    def test_tt_canvas_shown_when_eid_not_in_element_ids(self, panel):
+        """T-t always shows the globally hottest element, not the selected one.
+
+        Even when the selected eid is absent from element_ids, T_centroid has
+        valid data so the graph shows the hottest element found there.
+        """
         model = _make_model(eid=1)
         result = _make_result(eid=1)
-        # Override element_ids to exclude eid=1
-        result.element_ids = [99]
+        result.element_ids = [99]   # selected eid=1 not in element_ids
         panel.show_section(1, model, result)
-        assert panel._tt_canvas.isHidden()
+        assert not panel._tt_canvas.isHidden()
 
     def test_tt_canvas_hidden_for_non_box(self, panel):
         """Non-BOX section: T-t canvas can still show if eid in element_ids."""
@@ -298,24 +301,24 @@ class TestUpdateTime:
         loaded_panel.update_time(2)
         assert not loaded_panel._canvas.isHidden()
 
-    def test_update_moves_tt_vline(self, loaded_panel):
+    def test_update_moves_tt_marker(self, loaded_panel):
         """update_time repositions the marker without a full replot."""
         result = loaded_panel._result
         loaded_panel.update_time(3)
         expected_t = float(result.times[3])
-        x = loaded_panel._tt_vline.get_xdata()[0]
+        x = loaded_panel._tt_marker.get_xdata()[0]
         assert abs(x - expected_t) < 1e-6
 
-    def test_update_tt_vline_at_step_zero(self, loaded_panel):
+    def test_update_tt_marker_at_step_zero(self, loaded_panel):
         loaded_panel.update_time(0)
         expected_t = float(loaded_panel._result.times[0])
-        assert abs(loaded_panel._tt_vline.get_xdata()[0] - expected_t) < 1e-6
+        assert abs(loaded_panel._tt_marker.get_xdata()[0] - expected_t) < 1e-6
 
-    def test_update_tt_vline_at_last_step(self, loaded_panel):
+    def test_update_tt_marker_at_last_step(self, loaded_panel):
         n = len(loaded_panel._result.times)
         loaded_panel.update_time(n - 1)
         expected_t = float(loaded_panel._result.times[n - 1])
-        assert abs(loaded_panel._tt_vline.get_xdata()[0] - expected_t) < 1e-6
+        assert abs(loaded_panel._tt_marker.get_xdata()[0] - expected_t) < 1e-6
 
     def test_update_keeps_tt_canvas_visible(self, loaded_panel):
         loaded_panel.update_time(2)

@@ -794,67 +794,44 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_analysis_config_accepted(self, config: object) -> None:
-        """Start the analysis worker and show a progress dialog."""
-        from PyQt6.QtWidgets import QProgressDialog
+        """Start the analysis worker and show the USFOS-style console dialog."""
         from fahts.core.results.analysis_config import AnalysisConfig
         from fahts.gui.analysis_worker import AnalysisWorker
+        from fahts.gui.dialogs.analysis_console_dialog import AnalysisConsoleDialog
 
         cfg: AnalysisConfig = config  # type: ignore[assignment]
         log.info("Starting analysis: %s", cfg.summary())
 
         self._worker = AnalysisWorker(self._model, self._fire_sources, cfg)
 
-        # Modal progress dialog
-        n_est = max(len(cfg.element_ids), 1) if cfg.element_ids else None
-        self._progress_dlg = QProgressDialog(
-            "Preparing analysis…", "Cancel", 0, n_est or 0, self
-        )
-        self._progress_dlg.setWindowTitle("Heat Transfer Analysis")
-        self._progress_dlg.setMinimumWidth(380)
-        self._progress_dlg.setMinimumDuration(0)
-        self._progress_dlg.setValue(0)
-        self._progress_dlg.canceled.connect(self._worker.cancel)
+        self._progress_dlg = AnalysisConsoleDialog(self)
+        self._progress_dlg.rejected.connect(self._worker.cancel)
 
-        self._worker.progress.connect(self._on_analysis_progress)
+        self._worker.log_line.connect(self._progress_dlg.append_line)
+        self._worker.progress.connect(self._progress_dlg.set_progress)
         self._worker.finished.connect(self._on_analysis_finished)
         self._worker.error.connect(self._on_analysis_error)
         self._worker.cancelled.connect(self._on_analysis_cancelled)
 
         self._worker.start()
+        self._progress_dlg.show()
         self._status("Analysis running…")
 
-    def _on_analysis_progress(self, current: int, total: int, eid: int) -> None:
-        """Update the progress dialog during the run."""
-        dlg = self._progress_dlg
-        if dlg is None:
-            return
-        dlg.setMaximum(total)
-        dlg.setValue(current)
-        if eid >= 0:
-            dlg.setLabelText(
-                f"Solving element {eid}  ({current + 1} of {total})…"
-            )
-
     def _on_analysis_finished(self, result: object) -> None:
-        """Store results, build PostProcessor, and show summary."""
+        """Store results, update scene, and mark console complete."""
         from fahts.core.results.post_processor import PostProcessor
         from fahts.core.results.temperature_field import TemperatureField
         tf: TemperatureField = result  # type: ignore[assignment]
         self._last_result = tf
         self._post_processor = PostProcessor(tf)
 
-        if self._progress_dlg is not None:
-            self._progress_dlg.close()
-            self._progress_dlg = None
-
-        summary = self._post_processor.summary_text()
         status_line = (
             f"Analysis complete — {tf.n_elements} element(s), "
             f"{tf.n_steps} steps.  "
             f"Critical (≥ 600 °C): {len(tf.critical_elements())}."
         )
         self._status(status_line)
-        log.info("%s\n%s", status_line, summary)
+        log.info(status_line)
 
         self._anim_show(tf)
         self._results_panel.show_results(tf)
@@ -864,49 +841,25 @@ class MainWindow(QMainWindow):
         self._action_export_excel.setEnabled(True)
         self._action_save_animation.setEnabled(True)
         self._action_threshold_overlay.setEnabled(True)
-        self._show_scrollable_summary("Analysis Complete", summary)
 
-    def _show_scrollable_summary(self, title: str, text: str) -> None:
-        """Show a resizable dialog with a scrollable text area."""
-        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
-        from PyQt6.QtGui import QFont
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        dlg.resize(520, 480)
-
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        text_edit = QPlainTextEdit(dlg)
-        text_edit.setReadOnly(True)
-        text_edit.setFont(QFont("Courier New", 9))
-        text_edit.setPlainText(text)
-        layout.addWidget(text_edit)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, dlg)
-        buttons.accepted.connect(dlg.accept)
-        layout.addWidget(buttons)
-
-        dlg.exec()
+        if self._progress_dlg is not None:
+            self._progress_dlg.set_complete()
 
     def _on_analysis_error(self, message: str) -> None:
-        """Show an error dialog if the worker raises an exception."""
-        if self._progress_dlg is not None:
-            self._progress_dlg.close()
-            self._progress_dlg = None
+        """Show error state in console dialog."""
         self._status("Analysis failed.")
         log.error("Analysis error: %s", message)
-        QMessageBox.critical(self, "Analysis Error", message)
+        if self._progress_dlg is not None:
+            self._progress_dlg.set_failed(message)
+        else:
+            QMessageBox.critical(self, "Analysis Error", message)
 
     def _on_analysis_cancelled(self) -> None:
-        """Clean up after user cancellation."""
-        if self._progress_dlg is not None:
-            self._progress_dlg.close()
-            self._progress_dlg = None
+        """Acknowledge cancellation in console dialog."""
         self._status("Analysis cancelled.")
         log.info("Analysis cancelled by user.")
+        if self._progress_dlg is not None:
+            self._progress_dlg.set_cancelled()
 
     def _on_export_bc(self) -> None:
         """Export EN 1993-1-2 BC summary for multiple time steps to CSV."""

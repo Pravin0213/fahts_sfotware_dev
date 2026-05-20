@@ -245,13 +245,23 @@ class SceneManager:
 
         T_arr = self._T_colour_map.write_scalars(self._solid_mesh, T_per_element)
 
+        prev_clim = self._T_colour_map.clim
         if clim is not None:
             self._T_colour_map.set_clim(*clim)
         else:
             self._T_colour_map.auto_clim(T_arr)
 
         self._colour_mode = "temperature"
-        self._refresh_actors()
+
+        # Fast path: actor already exists and colour limits haven't changed →
+        # update scalars in-place without the blink-inducing remove/re-add cycle.
+        if (self._solid_actor is not None
+                and self._render_mode == "section"
+                and self._T_colour_map.clim == prev_clim):
+            self._solid_mesh.Modified()
+            self._pl.render()
+        else:
+            self._refresh_actors()
 
     def set_temperature_cmap(self, cmap: str) -> None:
         """

@@ -411,6 +411,8 @@ class TemperatureColourMap:
             "color": "white",
             "vertical": True,
             "shadow": True,
+            "height": 0.9,
+            "position_y": 0.05,
         }
 
         return dict(

@@ -94,3 +94,27 @@ class RadiationBall(HeatSource):
             if flux > 0.0:
                 result[beam.eid] = flux
         return result
+
+    def falloff_element_ids(
+        self,
+        elements: dict,
+        nodes: dict,
+        min_flux: float = 1.0,
+    ) -> set[int]:
+        """
+        Return element IDs beyond r2 where the inverse-square falloff flux
+        could exceed min_flux [W/m²] (using cos θ = 1 as an upper bound).
+
+        FAHTS §3.5.4 concentrated source: q = flux2 · (r2/r)² · cos(θ)
+        Pre-filter: flux2 · (r2/r)² > min_flux  →  r < r2 · √(flux2/min_flux)
+        """
+        if self.flux2 <= 0.0 or min_flux <= 0.0:
+            return set()
+        r_cutoff = self.r2 * (self.flux2 / min_flux) ** 0.5
+        result: set[int] = set()
+        for beam in elements.values():
+            mid = beam.midpoint(nodes)
+            dist = float(np.linalg.norm(mid - self.center))
+            if dist > self.r2 and dist <= r_cutoff:
+                result.add(beam.eid)
+        return result

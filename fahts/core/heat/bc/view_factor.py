@@ -1,11 +1,12 @@
 """
-Phase 2.5 — Exposure logic: which beam faces are inside which fire zones.
+Exposure logic and geometric view factor calculations.
 
-Phase 2 uses a binary in/out check on the beam midpoint.
-Phase 5 will replace this with analytical view-factor geometry and ray casting.
+Phase 2 exposure: binary in/out check on beam midpoint.
+Phase 3E+ radiation: FAHTS §3.2.4 net radiation with §3.3.4 geometric view factors.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -176,3 +177,54 @@ def compute_all_bcs(
         if bc is not None:
             result.append(bc)
     return result
+
+
+# ── §3.3.4 Geometric view factor ─────────────────────────────────────────────
+
+def geometric_view_factor(
+    patch_centroid: np.ndarray,
+    patch_normal: np.ndarray,
+    zone_patches: list[tuple[np.ndarray, np.ndarray, float]],
+) -> float:
+    """
+    FAHTS §3.3.4 view factor from a steel surface patch to a set of fire-zone
+    sub-patches.
+
+    Applies the simplified area-to-point form (valid when each sub-patch area
+    is small relative to the separation distance r):
+
+        F = Σ_j  cosθ_i · cosθ_j / (π · r²) · A_j
+
+    where
+      θ_i : angle between the steel patch outward normal and the direction to j
+      θ_j : angle between the fire-zone patch inward normal and the direction to i
+      r   : distance between patch centroids [m]
+      A_j : area of fire-zone sub-patch [m²]
+
+    Only pairs where both cosines are positive contribute (mutual visibility).
+
+    Parameters
+    ----------
+    patch_centroid : (3,) global centroid of the steel surface patch [m]
+    patch_normal   : (3,) outward unit normal of the steel surface patch
+    zone_patches   : list of (centroid, inward_normal, area) from
+                     FireZone.face_patches()
+
+    Returns
+    -------
+    float
+        Geometric view factor in [0, 1].
+    """
+    F = 0.0
+    for j_centroid, j_normal, A_j in zone_patches:
+        r_vec = j_centroid - patch_centroid
+        r = float(np.linalg.norm(r_vec))
+        if r < 1e-9:
+            continue
+        r_hat = r_vec / r
+        cos_i = float(np.dot(patch_normal, r_hat))   # steel normal vs direction to fire
+        cos_j = float(np.dot(j_normal, -r_hat))      # fire inward normal vs direction to steel
+        if cos_i <= 0.0 or cos_j <= 0.0:
+            continue
+        F += cos_i * cos_j / (math.pi * r * r) * A_j
+    return min(F, 1.0)

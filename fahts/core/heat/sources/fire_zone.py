@@ -136,6 +136,53 @@ class FireZone(HeatSource):
         """Convenience alias — test whether a beam midpoint is inside."""
         return self.contains_point(midpoint, tolerance)
 
+    def face_patches(
+        self, n_sub: int = 4
+    ) -> list[tuple[np.ndarray, np.ndarray, float]]:
+        """
+        Discretize all 6 box faces into (n_sub × n_sub) sub-patches.
+
+        FAHTS §3.3.4 numerical view factor integration: both source and target
+        surfaces are subdivided into small areas for which the simplified
+        point-to-point formula F = A_j·cosθ_i·cosθ_j / (π·r²) is valid.
+
+        The *inward* normal of each face points toward the fire zone interior —
+        this is the effective emission direction of the hot gas surface.
+
+        Parameters
+        ----------
+        n_sub : sub-divisions per face edge (default 4 → 16 patches per face)
+
+        Returns
+        -------
+        list of (centroid [m], inward_normal, area [m²]) tuples
+        """
+        c = np.asarray(self.center, dtype=float)
+        d = np.asarray(self.dims, dtype=float)
+
+        patches: list[tuple[np.ndarray, np.ndarray, float]] = []
+        for axis in range(3):
+            u_ax = (axis + 1) % 3
+            v_ax = (axis + 2) % 3
+            u_step = d[u_ax] / n_sub
+            v_step = d[v_ax] / n_sub
+            sub_area = u_step * v_step
+
+            for sign in (+1, -1):
+                face_center = c.copy()
+                face_center[axis] += sign * d[axis] / 2.0
+                inward = np.zeros(3)
+                inward[axis] = -float(sign)  # points toward fire zone interior
+
+                for i in range(n_sub):
+                    for j in range(n_sub):
+                        patch = face_center.copy()
+                        patch[u_ax] += -d[u_ax] / 2.0 + (i + 0.5) * u_step
+                        patch[v_ax] += -d[v_ax] / 2.0 + (j + 0.5) * v_step
+                        patches.append((patch, inward, sub_area))
+
+        return patches
+
     def __str__(self) -> str:
         c = self.center
         d = self.dims
