@@ -37,9 +37,20 @@ Default mesh: 2×3×4 = 40 quad elements, 50 nodes.
 IProfileSurfaceMesher(section: ISection, length: float,
                       n_top=4, n_side=2, n_bottom=2, n_length=2).build() → BeamSurfaceMesh
 ```
-8 outer faces: top flange (top surface + 2 overhang undersides), web (left + right),
-bottom flange (2 overhang undersides + bottom surface).
-Corner nodes shared at (x, ±tw/2, z_top_in) and (x, ±tw/2, z_bot_in).
+3 faces: top flange **inner** face (z = z_top_in), web left face at y = −tw/2, bottom
+flange **inner** face (z = z_bot_in).  Each plate is ONE face per §3.4.1 "2 outsides";
+analysis_runner passes n_exposed_sides=2 so both faces of each plate receive fire BC.
+
+**T-junction connectivity:** The flange y-grid is forced to include y = −tw/2 via
+`_flange_ys(bf, n, y_jct=-tw/2)`, so `gid()` deduplicates the web corner nodes
+`(x_i, −tw/2, z_top_in)` and `(x_i, −tw/2, z_bot_in)` with inner-flange nodes.
+Result: shared DOFs at the web-flange junction, giving a connected conductivity
+matrix K with heat-conduction paths between web and flanges.
+
+**Why web at y = −tw/2, not y = 0:** `_quad_outward_normal_local` uses `np.sign(y)`
+to determine the outward normal direction. At y = 0, `np.sign(0) = 0` → zero normal →
+zero RadiationBall flux on the web. The left face at y = −tw/2 gives a well-defined
+outward normal (0, −1, 0).
 
 ### PipeSurfaceMesher
 ```python

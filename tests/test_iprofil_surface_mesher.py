@@ -1,10 +1,9 @@
 """
 Tests for IProfileSurfaceMesher and its BeamSurfaceMesh output.
 
-Covers mesh structure, node deduplication, corner sharing, element counts,
+Covers mesh structure, node deduplication, junction connectivity, element counts,
 thickness assignments, and area weights.
 """
-import math
 import numpy as np
 import pytest
 
@@ -118,35 +117,38 @@ class TestCoordinateRanges:
         assert float(ys.max()) <= +half_bf + 1e-9
 
     def test_z_range(self):
+        # Flanges are meshed at their inner faces; web spans between them.
+        z_top_in = self.sec.h / 2.0 - self.sec.tf_top
+        z_bot_in = -self.sec.h / 2.0 + self.sec.tf_bot
         zs = self.mesh.nodes[:, 2]
-        assert float(zs.min()) == pytest.approx(-self.sec.h / 2.0)
-        assert float(zs.max()) == pytest.approx(+self.sec.h / 2.0)
+        assert float(zs.min()) == pytest.approx(z_bot_in)
+        assert float(zs.max()) == pytest.approx(z_top_in)
 
 
 # ── Thickness assignments ─────────────────────────────────────────────────────
 
 class TestThicknessAssignments:
 
-    def test_top_flange_top_face_thickness(self):
-        """Quads on the top face (z = h/2) must have thickness = tf_top."""
+    def test_top_flange_inner_face_thickness(self):
+        """Quads on the top flange inner face (z = z_top_in) must have thickness = tf_top."""
         sec  = _isec()
         mesh = IProfileSurfaceMesher(sec, length=2.0).build()
-        z_top = sec.h / 2.0
+        z_top_in = sec.h / 2.0 - sec.tf_top
         for q, quad in enumerate(mesh.quads):
-            if np.allclose(mesh.nodes[quad, 2], z_top, atol=1e-9):
+            if np.allclose(mesh.nodes[quad, 2], z_top_in, atol=1e-9):
                 assert float(mesh.thicknesses[q]) == pytest.approx(sec.tf_top)
 
-    def test_bottom_flange_bottom_face_thickness(self):
-        """Quads on the bottom face (z = -h/2) must have thickness = tf_bot."""
+    def test_bottom_flange_inner_face_thickness(self):
+        """Quads on the bot flange inner face (z = z_bot_in) must have thickness = tf_bot."""
         sec  = _isec()
         mesh = IProfileSurfaceMesher(sec, length=2.0).build()
-        z_bot = -sec.h / 2.0
+        z_bot_in = -sec.h / 2.0 + sec.tf_bot
         for q, quad in enumerate(mesh.quads):
-            if np.allclose(mesh.nodes[quad, 2], z_bot, atol=1e-9):
+            if np.allclose(mesh.nodes[quad, 2], z_bot_in, atol=1e-9):
                 assert float(mesh.thicknesses[q]) == pytest.approx(sec.tf_bot)
 
     def test_web_face_thickness(self):
-        """Quads at y = ±tw/2 (vertical web faces) must have thickness = tw."""
+        """Quads on the web left face (all node |y| = tw/2) must have thickness = tw."""
         sec  = _isec()
         mesh = IProfileSurfaceMesher(sec, length=2.0).build()
         yw = sec.tw / 2.0
@@ -159,9 +161,9 @@ class TestThicknessAssignments:
         """Different tf_top, tf_bot, tw all appear correctly."""
         sec  = _narrow_isec()
         mesh = IProfileSurfaceMesher(sec, length=2.0).build()
-        z_top = sec.h / 2.0
-        z_bot = -sec.h / 2.0
-        yw    = sec.tw / 2.0
+        z_top_in = sec.h / 2.0 - sec.tf_top
+        z_bot_in = -sec.h / 2.0 + sec.tf_bot
+        yw       = sec.tw / 2.0
 
         top_ts   = set()
         bot_ts   = set()
@@ -170,9 +172,9 @@ class TestThicknessAssignments:
         for q, quad in enumerate(mesh.quads):
             zs = mesh.nodes[quad, 2]
             ys = mesh.nodes[quad, 1]
-            if np.allclose(zs, z_top, atol=1e-9):
+            if np.allclose(zs, z_top_in, atol=1e-9):
                 top_ts.add(round(float(mesh.thicknesses[q]), 9))
-            if np.allclose(zs, z_bot, atol=1e-9):
+            if np.allclose(zs, z_bot_in, atol=1e-9):
                 bot_ts.add(round(float(mesh.thicknesses[q]), 9))
             if np.allclose(np.abs(ys), yw, atol=1e-9):
                 web_ts.add(round(float(mesh.thicknesses[q]), 9))
@@ -207,8 +209,10 @@ class TestDeduplication:
 
     def test_web_flange_junction_nodes_shared(self):
         """
-        At each (x_i, ±tw/2, z_top_in) and (x_i, ±tw/2, z_bot_in), exactly
-        one node must exist — shared between web face and flange overhang face.
+        The web left-face corner nodes at y = −tw/2 must be shared with the
+        inner-flange face nodes at the same (x, y=-tw/2, z_top_in/z_bot_in).
+        This verifies the T-junction FEM connectivity that allows heat conduction
+        between web and flanges.
         """
         sec  = _isec()
         L    = 2.0
@@ -217,21 +221,42 @@ class TestDeduplication:
 
         z_top_in = sec.h / 2.0 - sec.tf_top
         z_bot_in = -sec.h / 2.0 + sec.tf_bot
-        yw_l, yw_r = -sec.tw / 2.0, sec.tw / 2.0
-        xs = np.linspace(0.0, L, nl + 1)
+        yw_l     = -sec.tw / 2.0   # web left-face y
 
-        for xi in xs:
-            for yc in (yw_l, yw_r):
-                for zc in (z_top_in, z_bot_in):
-                    matches = [
-                        i for i, n in enumerate(mesh.nodes)
-                        if abs(n[0] - xi) < 1e-9 and abs(n[1] - yc) < 1e-9
-                        and abs(n[2] - zc) < 1e-9
-                    ]
-                    assert len(matches) == 1, (
-                        f"Junction ({xi:.2f}, {yc:.4f}, {zc:.4f}) "
-                        f"has {len(matches)} nodes"
-                    )
+        # web quads: all 4 nodes at |y| = tw/2 (left web face)
+        # flange quads: all 4 nodes at z = z_top_in or z = z_bot_in
+        web_node_ids = set()
+        top_node_ids = set()
+        bot_node_ids = set()
+        for q, quad in enumerate(mesh.quads):
+            ys = mesh.nodes[quad, 1]
+            zs = mesh.nodes[quad, 2]
+            if np.allclose(np.abs(ys), sec.tw / 2.0, atol=1e-9):
+                web_node_ids.update(int(n) for n in quad)
+            if np.allclose(zs, z_top_in, atol=1e-9):
+                top_node_ids.update(int(n) for n in quad)
+            if np.allclose(zs, z_bot_in, atol=1e-9):
+                bot_node_ids.update(int(n) for n in quad)
+
+        shared_top = web_node_ids & top_node_ids
+        shared_bot = web_node_ids & bot_node_ids
+
+        assert len(shared_top) >= nl + 1, (
+            f"Expected ≥{nl+1} shared web↔top-flange nodes, got {len(shared_top)}"
+        )
+        assert len(shared_bot) >= nl + 1, (
+            f"Expected ≥{nl+1} shared web↔bot-flange nodes, got {len(shared_bot)}"
+        )
+
+        # Each shared node must sit at y = yw_l and z = junction z
+        for nid in shared_top:
+            n = mesh.nodes[nid]
+            assert abs(n[1] - yw_l) < 1e-9, f"Top junction node y={n[1]} ≠ {yw_l}"
+            assert abs(n[2] - z_top_in) < 1e-9, f"Top junction node z={n[2]} ≠ {z_top_in}"
+        for nid in shared_bot:
+            n = mesh.nodes[nid]
+            assert abs(n[1] - yw_l) < 1e-9, f"Bot junction node y={n[1]} ≠ {yw_l}"
+            assert abs(n[2] - z_bot_in) < 1e-9, f"Bot junction node z={n[2]} ≠ {z_bot_in}"
 
 
 # ── Area weights ──────────────────────────────────────────────────────────────

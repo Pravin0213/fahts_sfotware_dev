@@ -65,7 +65,7 @@ Key fields: `nodes_3d`, `quads`, `node_areas`, `outer_face_indices`, `inner_node
 
 **BoxSurfaceMesher** — 4 outer faces (bottom, top, left, right). Defaults: n_top=2, n_side=3, n_length=4.
 
-**IProfileSurfaceMesher** — 8 faces (top flange top/bot, bottom flange top/bot, web left/right, overhang undersides). Defaults: n_top=4, n_side=2, n_bottom=2, n_length=2.
+**IProfileSurfaceMesher** — 3 faces: top flange inner face (z=z_top_in), web left face (y=−tw/2), bottom flange inner face (z=z_bot_in). Web corner nodes are shared with inner-flange nodes via `_flange_ys` → connected K matrix (web-to-flange heat conduction). Web at y=−tw/2, not y=0, to avoid zero normal in `_quad_outward_normal_local`. Defaults: n_top=4, n_side=2, n_bottom=2, n_length=2.
 
 **PipeSurfaceMesher** — Unrolled cylindrical surface → `local_coords_2d`. Defaults: c_circ=8, n_length=4.
 

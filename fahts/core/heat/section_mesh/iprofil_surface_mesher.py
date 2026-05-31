@@ -1,9 +1,27 @@
 """
 I-profile (IHPROFIL) 3-D surface mesh generator (FAHTS axial × hoop approach).
 
-Creates Quad4 shell elements on all exposed outer faces of an I/H-beam.
-The 2-D heat equation is solved in the axial × hoop plane of each face element;
-wall thickness is a scalar parameter (SINTEF FAHTS §3.2.2).
+Creates Quad4 shell elements on the three structural plates of an I/H-beam
+following SINTEF FAHTS §3.4.1:
+
+    - Top flange    : inner (bottom) face at z = z_top_in, full width bf_top
+    - Web           : left face at y = −tw/2, spanning z_bot_in → z_top_in
+    - Bottom flange : inner (top) face at z = z_bot_in, full width bf_bot
+
+The flanges are meshed at their inner faces and the y-grid is forced to include
+y = −tw/2 (left web face position).  This makes the web top/bottom corner nodes
+(x_i, −tw/2, z_top_in) and (x_i, −tw/2, z_bot_in) coincide exactly with inner-
+flange nodes → gid() deduplication creates SHARED nodes, giving a connected FEM
+conductivity matrix with heat-conduction paths from web to flanges and back.
+
+The web is placed at y = −tw/2 (not y = 0) so its outward normal (0, −1, 0) is
+non-zero and correct for directional (RadiationBall) flux calculations.
+
+Per FAHTS §3.4.1, I/H profiles are OPEN sections with "2 outsides": both faces
+of each structural plate are fire-exposed.  This is handled by passing
+n_exposed_sides=2 to SurfaceTransientSolver (see analysis_runner.py).  Using ONE
+face per plate (rather than separate top+underside faces) avoids double-counting
+the plate thermal mass.
 
 Default mesh divisions (matching FAHTS software defaults):
     n_top    = 4   elements across top flange width (hoop direction)
@@ -11,22 +29,16 @@ Default mesh divisions (matching FAHTS software defaults):
     n_bottom = 2   elements across bottom flange width (hoop direction)
     n_length = 2   elements along beam axis
 
-Exposed face layout (beam-local: x = axial, y = hoop-horizontal, z = vertical):
+Face layout (beam-local: x = axial, y = hoop-horizontal, z = vertical):
 
-  z = +h/2          ┌─────── top face (n_top × n_length) ────────┐
-                    │        top flange, thickness = tf_top      │
-  z = z_top_in  └─ ovhg_L ─┬── web top ──┬─ ovhg_R ─┘
-                             │  left web   │
-                             │  (n_side    │
-  z = z_bot_in  ┌─ ovhg_L ─┴── web bot ──┴─ ovhg_R ─┐
-                    │        bottom flange             │
-  z = -h/2          └─────── bottom face (n_bottom × n_length) ──┘
-
-ovhg_L / ovhg_R = overhang underside faces (horizontal, same thickness as flange).
-Overhang element count is scaled proportionally to the flange element count.
-
-Corner nodes at (x_i, ±tw/2, z_top_in) and (x_i, ±tw/2, z_bot_in) are shared
-between the web and overhang faces via 3-D coordinate deduplication.
+  z = z_top_in  ┌─── top flange inner face (n_top × n_length) ──────┐
+                │  t = tf_top; y=−tw/2 node ← web junction node     │
+  z = z_top_in  └──── web top edge (y=−tw/2) ────────────────────────┘
+                              │  web (n_side × n_length)              │
+                              │  left face at y = −tw/2               │
+  z = z_bot_in  ┌──── web bot edge (y=−tw/2) ────────────────────────┐
+                │  t = tf_bot; y=−tw/2 node ← web junction node     │
+  z = z_bot_in  └─── bot flange inner face (n_bot × n_length) ───────┘
 """
 from __future__ import annotations
 
@@ -42,11 +54,20 @@ class IProfileSurfaceMesher:
     """
     Generates the FAHTS-style surface Quad4 mesh for an I/H-profile beam.
 
+    Three structural plates are meshed (top flange, web, bottom flange).  Both
+    faces of each plate are fire-exposed (§3.4.1 "2 outsides"), so the caller
+    must set n_exposed_sides=2 in SurfaceTransientSolver.
+
+    The mesh is topologically connected: inner flange faces (z = z_top_in /
+    z_bot_in) include y = −tw/2 as a forced grid node that coincides with the
+    web left-face corner.  gid() deduplication creates shared nodes at the
+    T-junctions so the FEM conductivity matrix couples web and flange DOFs.
+
     Args:
         section:   ISection to mesh.
         length:    Beam element length [m].
         n_top:     Elements across top flange width (default 4).
-        n_side:    Elements along web height — each web face (default 2).
+        n_side:    Elements along web height (default 2).
         n_bottom:  Elements across bottom flange width (default 2).
         n_length:  Elements along beam axis (default 2).
     """
@@ -86,17 +107,13 @@ class IProfileSurfaceMesher:
         s = self._sec
         L = self._L
 
-        z_top_out = s.h / 2.0              # top of top flange
-        z_top_in  = z_top_out - s.tf_top   # underside of top flange
-        z_bot_in  = -s.h / 2.0 + s.tf_bot # topside of bottom flange
-        z_bot_out = -s.h / 2.0            # bottom of bottom flange
-
-        yw_l = -s.tw / 2.0                # left web face y
-        yw_r =  s.tw / 2.0                # right web face y
+        z_top_in  = s.h / 2.0 - s.tf_top   # inner face of top flange = web top junction
+        z_bot_in  = -s.h / 2.0 + s.tf_bot  # inner face of bot flange = web bot junction
+        yw_l      = -s.tw / 2.0             # left web face y (outward normal = −y)
 
         xs = np.linspace(0.0, L, self._n_length + 1)
 
-        # Global node pool
+        # Global node pool with 3-D coordinate deduplication
         pool: list[np.ndarray] = []
         idx:  dict[tuple, int] = {}
 
@@ -135,36 +152,23 @@ class IProfileSurfaceMesher:
                     thicknesses.append(thickness)
                     local_cols.append((0, 2))  # FEM in (x, z)
 
-        # ── Top flange top face (full width) ──────────────────────────────────
-        ys_top = np.linspace(-s.bf_top / 2.0, s.bf_top / 2.0, self._n_top + 1)
-        add_face_xy(ys_top, z_top_out, s.tf_top)
+        # ── Top flange: inner face at z_top_in ────────────────────────────────
+        # _flange_ys forces y=yw_l into the grid so gid() deduplicates the web
+        # top-corner node (x_i, yw_l, z_top_in) with this face → shared DOF.
+        ys_top = _flange_ys(s.bf_top, self._n_top, yw_l)
+        add_face_xy(ys_top, z_top_in, s.tf_top)
 
-        # ── Top flange underside — left and right overhangs ───────────────────
-        ovhg_top = max(0.0, (s.bf_top - s.tw) / 2.0)
-        if ovhg_top > 0.0:
-            n_oh_top = max(1, round(self._n_top * ovhg_top / s.bf_top))
-            ys_oh_L = np.linspace(-s.bf_top / 2.0, yw_l, n_oh_top + 1)
-            ys_oh_R = np.linspace(yw_r, s.bf_top / 2.0, n_oh_top + 1)
-            add_face_xy(ys_oh_L, z_top_in, s.tf_top)
-            add_face_xy(ys_oh_R, z_top_in, s.tf_top)
-
-        # ── Web — left and right faces ────────────────────────────────────────
+        # ── Web — left face at y=yw_l, spanning z_bot_in to z_top_in ─────────
+        # Per §3.4.1 the web is ONE plate receiving fire from both faces
+        # (n_exposed_sides=2 in the solver).  Left face at y=yw_l gives outward
+        # normal (0, −1, 0) — non-zero and correct for RadiationBall flux.
         zs_web = np.linspace(z_bot_in, z_top_in, self._n_side + 1)
         add_face_xz(zs_web, yw_l, s.tw)
-        add_face_xz(zs_web, yw_r, s.tw)
 
-        # ── Bottom flange topside — left and right overhangs ──────────────────
-        ovhg_bot = max(0.0, (s.bf_bot - s.tw) / 2.0)
-        if ovhg_bot > 0.0:
-            n_oh_bot = max(1, round(self._n_bottom * ovhg_bot / s.bf_bot))
-            ys_oh_bL = np.linspace(-s.bf_bot / 2.0, yw_l, n_oh_bot + 1)
-            ys_oh_bR = np.linspace(yw_r, s.bf_bot / 2.0, n_oh_bot + 1)
-            add_face_xy(ys_oh_bL, z_bot_in, s.tf_bot)
-            add_face_xy(ys_oh_bR, z_bot_in, s.tf_bot)
-
-        # ── Bottom flange bottom face (full width) ────────────────────────────
-        ys_bot = np.linspace(-s.bf_bot / 2.0, s.bf_bot / 2.0, self._n_bottom + 1)
-        add_face_xy(ys_bot, z_bot_out, s.tf_bot)
+        # ── Bottom flange: inner face at z_bot_in ─────────────────────────────
+        # y=yw_l in ys_bot → shared node with web bottom-corner node.
+        ys_bot = _flange_ys(s.bf_bot, self._n_bottom, yw_l)
+        add_face_xy(ys_bot, z_bot_in, s.tf_bot)
 
         return BeamSurfaceMesh(
             nodes=np.array(pool, dtype=float),
@@ -174,7 +178,24 @@ class IProfileSurfaceMesher:
         )
 
 
-# ── Module helper ─────────────────────────────────────────────────────────────
+# ── Module helpers ────────────────────────────────────────────────────────────
 
 def _snap(v: float) -> float:
     return round(v / _DEDUP_TOL) * _DEDUP_TOL
+
+
+def _flange_ys(bf: float, n: int, y_jct: float) -> np.ndarray:
+    """
+    y-node positions for a flange of width *bf* divided into *n* elements,
+    with *y_jct* (web T-junction) always present regardless of n parity.
+
+    The flange is split at y_jct: left part (−bf/2 → y_jct) gets ⌈n × frac⌉
+    elements and right part (y_jct → +bf/2) gets the remainder.  At least one
+    element per side is guaranteed.  Total element count = n.
+    """
+    frac_left = (y_jct - (-bf / 2.0)) / bf   # fraction of width to the left of junction
+    n_left    = min(n - 1, max(1, round(n * frac_left)))
+    n_right   = n - n_left
+    left  = np.linspace(-bf / 2.0, y_jct,      n_left  + 1)
+    right = np.linspace(y_jct,     bf / 2.0,   n_right + 1)
+    return np.concatenate([left, right[1:]])   # remove duplicate at y_jct

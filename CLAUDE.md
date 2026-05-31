@@ -144,6 +144,7 @@ Run: `python -m pytest tests/ -q`
 - **BELTEMP values are INCREMENTAL** — accumulate from T_initial=20°C
 - **UNITVEC** defines local z-axis of beam. `local_y = cross(local_x, UNITVEC)`, `local_z = cross(local_y, local_x)`
 - `model_file.fem` and `model_t1.fem` must always parse cleanly — smoke tests exist
+- **I-beam mesh topology:** Flanges are meshed at their **inner** faces (z = z_top_in / z_bot_in), not outer. Web is at y = **−tw/2** (not y=0 — `np.sign(0)=0` would zero the outward normal and kill RadiationBall flux). The `_flange_ys` helper forces y=−tw/2 into the flange grid so gid() creates shared T-junction nodes; this gives web↔flange heat conduction in K. See `iprofil_surface_mesher.py`.
 
 ---
 
