@@ -15,17 +15,43 @@
 
 ## beam_geometry.py
 
-Two public entry points consumed by `SceneManager.load_model()`:
+Public entry points:
 
 ```python
 build_centreline_mesh(model: FEMModel) → pv.PolyData
 build_model_mesh(model: FEMModel) → pv.PolyData
+build_analysis_mesh_overlay(model, solved_eids, config, centroid) → pv.PolyData
+build_mesh_inspector_data(model, centroid, config=None) → MeshInspectorData
 ```
 
 - `build_centreline_mesh`: line segments between node pairs — fast overview, no cross-section.
-- `build_model_mesh`: extruded cross-sections at true scale. Supports **BOX**, **PIPE**
-  (N-gon approximation with `_PIPE_SIDES=16`), **IHPROFIL**, and flat-polygon shells
-  (QUADSHEL/TRISHELL use raw node positions).
+- `build_model_mesh`: **USFOS-style thin mid-surface panels** (no wall thickness rendered).
+  Supports **BOX** (4 lateral quads), **PIPE** (outer-ring quads only), **IHPROFIL**
+  (3 flat panels: top flange / web / bottom flange), and flat-polygon shells.
+  Mesh nodes from the FEM solver sit on the same surfaces — no occlusion.
+- `build_mesh_inspector_data`: builds `MeshInspectorData` for interactive connectivity
+  inspection. Stores per-element quad connectivity so clicking a quad reveals K-matrix
+  neighbours (quads sharing a node = shared DOF = coupled in K).
+
+### MeshInspectorData
+
+```python
+@dataclass
+class MeshInspectorData:
+    mesh: pv.PolyData              # global scene-coord quads for picking
+    cell_beam_eid: np.ndarray      # (n_cells,) element ID per cell
+    cell_quad_idx: np.ndarray      # (n_cells,) local quad index
+    beam_quads: dict[int, np.ndarray]   # eid → (n_quads, 4) local node indices
+    beam_cell_offset: dict[int, int]    # eid → first cell index in mesh
+    beam_node_offset: dict[int, int]    # eid → first global point index in mesh
+```
+
+Cell data keys: `inspector_beam_eid`, `inspector_quad_idx` (distinguish from element mesh).
+
+**Node label placement gotcha:** `extract_cells([cell_idx])` returns points sorted by
+ascending global point index, NOT in the quad's connectivity order. Always look up label
+positions via `mesh.points[node_idx + beam_node_offset[eid]]` — never use
+`highlighted.points` for label coordinates.
 
 ### Local frame convention
 
@@ -84,3 +110,5 @@ Critical gotchas specific to the renderer layer:
 - Axis marker position is updated via a 1 ms `QTimer` (`_on_scene_tick`), not a render callback.
 - `_rebuild_axis_marker()` must be called after any plotter reset.
 - Temperature colour is applied to **both** `cell_data` and `point_data` for smooth interpolation.
+- `_on_cell_picked` routes on cell data keys: `inspector_beam_eid` → inspector callback;
+  `element_id` → element-pick callback. Both coexist — inspector mode does not disable element picking.

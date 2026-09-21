@@ -49,6 +49,7 @@ from fahts.core.io.results_writer import (
 from fahts.core.io.usfos_reader import read_usfos_fem
 from fahts.core.model.fem_model import FEMModel
 from fahts.gui.panels.heat_source_panel import HeatSourcePanel
+from fahts.gui.panels.mesh_inspector_panel import MeshInspectorPanel
 from fahts.gui.panels.model_tree_panel import ModelTreePanel
 from fahts.gui.panels.properties_panel import PropertiesPanel
 from fahts.gui.panels.results_panel import ResultsPanel
@@ -82,7 +83,10 @@ class MainWindow(QMainWindow):
         self._worker: object = None                # AnalysisWorker (Task 3.8)
         self._progress_dlg: object = None          # QProgressDialog (Task 3.8)
         self._last_result: object = None           # TemperatureField (Task 3.8)
+        self._last_config: object = None           # AnalysisConfig — for mesh overlay rebuild
+        self._mesh_overlay_eids: list[int] = []   # element IDs currently shown in overlay
         self._post_processor: object = None        # PostProcessor (Task 3.9)
+        self._mesh_inspector_data: object = None   # MeshInspectorData (cached)
 
         # Animation state (Task 4.4)
         self._anim_t_idx: int = 0
@@ -130,10 +134,23 @@ class MainWindow(QMainWindow):
             self._action_export_excel,
             self._action_save_animation,
             self._action_threshold_overlay,
+            self._action_legend_range,
         ):
             _a.setEnabled(False)
         self._action_threshold_overlay.setChecked(False)
         self._scene.set_threshold_overlay(False)
+        self._scene.reset_legend_clim()
+        self._action_show_mesh.setChecked(False)
+        self._action_show_mesh.setEnabled(False)
+        self._scene.show_analysis_mesh_overlay(None)
+        self._last_config = None
+        self._mesh_overlay_eids = []
+        self._action_inspect_mesh.setChecked(False)
+        self._action_inspect_mesh.setEnabled(False)
+        self._scene.hide_mesh_inspector()
+        self._inspector_panel.clear()
+        self._inspector_panel.setVisible(False)
+        self._mesh_inspector_data = None
 
         self._model = model
         self._scene.load_model(model)
@@ -146,11 +163,13 @@ class MainWindow(QMainWindow):
         self._action_colour_group.setEnabled(True)
         self._action_mode_wire.setEnabled(True)
         self._action_mode_section.setEnabled(True)
+        self._action_create_mesh.setEnabled(True)
         self._action_reset_cam.setEnabled(True)
         self._action_add_fire_zone.setEnabled(True)
         self._action_axis_marker.setEnabled(True)
         self._action_set_axis.setEnabled(True)
         self._action_screenshot.setEnabled(True)
+        self._action_inspect_mesh.setEnabled(True)
         # Export BC only enabled once fire zones exist
         self._action_export_bc.setEnabled(bool(self._fire_sources))
 
@@ -158,7 +177,8 @@ class MainWindow(QMainWindow):
             f"Model: {path.name}  |  "
             f"{model.n_nodes} nodes  |  "
             f"{model.n_elements} elements  |  "
-            f"{len(model.groups)} groups"
+            f"{len(model.groups)} groups  |  "
+            f"Ctrl+click to select element"
         )
         self._status(stats)
         self.model_loaded.emit(model)
@@ -187,6 +207,7 @@ class MainWindow(QMainWindow):
         self._action_reset_cam.setEnabled(False)
         self._action_axis_marker.setEnabled(False)
         self._action_set_axis.setEnabled(False)
+        self._action_create_mesh.setEnabled(False)
 
     def _build_actions(self) -> None:
         # ── File ──────────────────────────────────────────────────────────────
@@ -288,6 +309,35 @@ class MainWindow(QMainWindow):
         self._action_threshold_overlay.toggled.connect(self._on_toggle_threshold_overlay)
         self._action_threshold_overlay.setEnabled(False)
 
+        # ── View — legend fringe range ────────────────────────────────────────
+        self._action_legend_range = QAction("Set &Legend Range…", self)
+        self._action_legend_range.setStatusTip(
+            "Manually set the min/max temperature fringe range for the 3-D legend"
+        )
+        self._action_legend_range.triggered.connect(self._on_set_legend_range)
+        self._action_legend_range.setEnabled(False)
+
+        # ── View — mesh edge overlay ──────────────────────────────────────────
+        self._action_show_mesh = QAction("Show &Mesh", self)
+        self._action_show_mesh.setCheckable(True)
+        self._action_show_mesh.setChecked(False)
+        self._action_show_mesh.setStatusTip(
+            "Overlay element face edges on the solid section mesh"
+        )
+        self._action_show_mesh.toggled.connect(self._on_toggle_show_mesh)
+        self._action_show_mesh.setEnabled(False)
+
+        # ── View — mesh inspector ─────────────────────────────────────────────
+        self._action_inspect_mesh = QAction("&Inspect Mesh", self)
+        self._action_inspect_mesh.setCheckable(True)
+        self._action_inspect_mesh.setChecked(False)
+        self._action_inspect_mesh.setShortcut("I")
+        self._action_inspect_mesh.setStatusTip(
+            "Toggle the mesh connectivity inspector — click any quad to see shared nodes"
+        )
+        self._action_inspect_mesh.toggled.connect(self._on_toggle_inspect_mesh)
+        self._action_inspect_mesh.setEnabled(False)
+
         # ── View — axis marker ────────────────────────────────────────────────
         self._action_axis_marker = QAction("&Axis Marker", self)
         self._action_axis_marker.setCheckable(True)
@@ -306,6 +356,14 @@ class MainWindow(QMainWindow):
         self._action_set_axis.setEnabled(False)
 
         # ── Heat ──────────────────────────────────────────────────────────────
+        self._action_create_mesh = QAction("&Create Mesh…", self)
+        self._action_create_mesh.setShortcut("Ctrl+M")
+        self._action_create_mesh.setStatusTip(
+            "Set mesh parameters and preview the FEM mesh on the structure"
+        )
+        self._action_create_mesh.triggered.connect(self._on_create_mesh)
+        self._action_create_mesh.setEnabled(False)
+
         self._action_add_fire_zone = QAction("&Add Fire Zone…", self)
         self._action_add_fire_zone.setStatusTip("Add a rectangular fire zone to the scene")
         self._action_add_fire_zone.triggered.connect(self._on_add_fire_zone)
@@ -379,6 +437,8 @@ class MainWindow(QMainWindow):
         view_m.addSection("Render mode")
         view_m.addAction(self._action_mode_section)
         view_m.addAction(self._action_mode_wire)
+        view_m.addAction(self._action_show_mesh)
+        view_m.addAction(self._action_inspect_mesh)
         view_m.addSeparator()
         view_m.addSection("Colour")
         view_m.addAction(self._action_colour_default)
@@ -390,6 +450,7 @@ class MainWindow(QMainWindow):
         cmap_sub.addAction(self._action_cmap_plasma)
         cmap_sub.addAction(self._action_cmap_coolwarm)
         view_m.addAction(self._action_threshold_overlay)
+        view_m.addAction(self._action_legend_range)
 
         view_m.addSeparator()
         view_m.addSection("Axis")
@@ -402,6 +463,8 @@ class MainWindow(QMainWindow):
 
         # Heat
         heat_m = mb.addMenu("&Heat")
+        heat_m.addAction(self._action_create_mesh)
+        heat_m.addSeparator()
         heat_m.addAction(self._action_add_fire_zone)
         heat_m.addSeparator()
         heat_m.addAction(self._action_run_analysis)
@@ -448,6 +511,13 @@ class MainWindow(QMainWindow):
         tb.addWidget(QLabel(" Axis: "))
         tb.addAction(self._action_axis_marker)
         tb.addAction(self._action_set_axis)
+        tb.addSeparator()
+
+        # Mesh
+        tb.addWidget(QLabel(" Mesh: "))
+        tb.addAction(self._action_create_mesh)
+        tb.addAction(self._action_show_mesh)
+        tb.addAction(self._action_inspect_mesh)
 
     def _build_animation_toolbar(self) -> None:
         """
@@ -487,6 +557,10 @@ class MainWindow(QMainWindow):
         tb.addAction(self._action_anim_prev)
         tb.addAction(self._action_anim_next)
         tb.addAction(self._action_anim_last)
+        tb.addSeparator()
+
+        # ── Mesh overlay toggle ───────────────────────────────────────────────
+        tb.addAction(self._action_show_mesh)
         tb.addSeparator()
 
         # ── Time slider (stretches to fill available width) ───────────────────
@@ -537,7 +611,12 @@ class MainWindow(QMainWindow):
         self._results_panel = ResultsPanel()
         self._results_panel.time_hovered.connect(self._anim_go_to)
         left_splitter.addWidget(self._results_panel)
-        left_splitter.setSizes([280, 130, 110, 230])
+
+        self._inspector_panel = MeshInspectorPanel()
+        self._inspector_panel.setVisible(False)
+        left_splitter.addWidget(self._inspector_panel)
+
+        left_splitter.setSizes([280, 130, 110, 230, 0])
 
         # Wrap in a fixed-width frame to match ROADMAP layout
         self._left_panel = QFrame()
@@ -612,6 +691,7 @@ class MainWindow(QMainWindow):
             return
         self._selected_eid = eid
         self._props_panel.show_element(eid, self._model)
+        self._scene.highlight_element(eid)
         T_section = getattr(self._last_result, "T_section", {}) if self._last_result else {}
         if self._last_result is not None and eid in T_section:
             self._results_panel.show_section(
@@ -653,9 +733,120 @@ class MainWindow(QMainWindow):
         cmap_name: str = action.data()
         self._scene.set_temperature_cmap(cmap_name)
 
+    def _on_create_mesh(self) -> None:
+        """Open mesh preview dialog; on accept build overlay for all model elements."""
+        from fahts.gui.dialogs.mesh_preview_dialog import MeshPreviewDialog
+        dlg = MeshPreviewDialog(parent=self, current_config=self._last_config)
+        dlg.mesh_accepted.connect(self._on_mesh_preview_accepted)
+        dlg.exec()
+
+    def _on_mesh_preview_accepted(self, config: object) -> None:
+        """Store the mesh config, resolve element IDs, and show the overlay."""
+        if self._model is None:
+            return
+        self._last_config = config
+        self._mesh_inspector_data = None  # stale — rebuild on next inspector toggle
+        # Sync pipe visual geometry to match the chosen circumferential mesh density
+        self._scene.set_pipe_sides(config.c_circ)
+        # Use all beam elements (any supported section type); filter happens inside builder
+        self._mesh_overlay_eids = list(self._model.elements.keys())
+        self._action_show_mesh.setEnabled(True)
+        # Always show when user explicitly creates the mesh
+        self._action_show_mesh.blockSignals(True)
+        self._action_show_mesh.setChecked(True)
+        self._action_show_mesh.blockSignals(False)
+        self._rebuild_analysis_mesh_overlay()
+        n_beams = len(self._model.elements)
+        n_shells = len(self._model.shell_elements)
+        total = n_beams + n_shells
+        self._status(f"Mesh preview applied — {total} elements ({n_shells} shells)."
+                     if n_shells else f"Mesh preview applied — {total} elements.")
+
+    def _on_toggle_show_mesh(self, checked: bool) -> None:
+        """Show or hide the FEM analysis mesh wireframe overlay."""
+        if checked:
+            self._rebuild_analysis_mesh_overlay()
+        else:
+            self._scene.show_analysis_mesh_overlay(None)
+
+    def _rebuild_analysis_mesh_overlay(self) -> None:
+        """Build the analysis mesh PolyData and pass it to the scene manager."""
+        if self._model is None or self._last_config is None or not self._mesh_overlay_eids:
+            return
+        from fahts.renderer.beam_geometry import build_analysis_mesh_overlay
+        overlay = build_analysis_mesh_overlay(
+            self._model,
+            self._mesh_overlay_eids,
+            self._last_config,
+            self._model.centroid(),
+        )
+        self._scene.show_analysis_mesh_overlay(overlay)
+
+    def _on_toggle_inspect_mesh(self, checked: bool) -> None:
+        """Show or hide the mesh connectivity inspector overlay."""
+        if checked:
+            self._ensure_inspector_data()
+            if self._mesh_inspector_data is not None:
+                self._scene.show_mesh_inspector(
+                    self._mesh_inspector_data,
+                    self._on_quad_inspected,
+                )
+                self._inspector_panel.setVisible(True)
+        else:
+            self._scene.hide_mesh_inspector()
+            self._inspector_panel.clear()
+            self._inspector_panel.setVisible(False)
+
+    def _ensure_inspector_data(self) -> None:
+        """Build inspector data if not already cached; uses last config or defaults."""
+        if self._mesh_inspector_data is not None or self._model is None:
+            return
+        from fahts.renderer.beam_geometry import build_mesh_inspector_data
+        self._mesh_inspector_data = build_mesh_inspector_data(
+            self._model,
+            self._model.centroid(),
+            config=self._last_config,
+        )
+
+    def _on_quad_inspected(self, beam_eid: int, quad_idx: int) -> None:
+        """Populate the inspector panel and highlight the quad when it is clicked."""
+        if self._mesh_inspector_data is None:
+            return
+        data = self._mesh_inspector_data
+        quads = data.beam_quads.get(beam_eid)
+        if quads is None or quad_idx >= len(quads):
+            return
+        quad_nodes = quads[quad_idx].tolist()
+        gdof_arr = data.beam_node_gdof.get(beam_eid)
+        quad_gdofs = [int(gdof_arr[n]) for n in quad_nodes] if gdof_arr is not None else None
+        self._inspector_panel.show_quad_info(beam_eid, quad_idx, quad_nodes, quads,
+                                             quad_gdofs=quad_gdofs)
+        self._scene.highlight_inspector_quad(beam_eid, quad_idx)
+        # Also update properties panel so the owning element is identified
+        if self._model is not None and beam_eid in self._model.elements:
+            self._props_panel.show_element(beam_eid, self._model)
+
     def _on_toggle_threshold_overlay(self, checked: bool) -> None:
         """Enable or disable the 660 °C critical-temperature threshold overlay."""
         self._scene.set_threshold_overlay(checked)
+
+    def _on_set_legend_range(self) -> None:
+        """Open the legend fringe-range dialog and apply the user's choice."""
+        from fahts.gui.dialogs.legend_range_dialog import LegendRangeDialog
+        current = self._scene.legend_clim
+        if current is not None:
+            lo, hi = current
+        elif self._last_result is not None:
+            import numpy as np
+            T_all = np.asarray(self._last_result.T_centroid)
+            lo = float(np.nanmin(T_all))
+            hi = float(np.nanmax(T_all))
+        else:
+            lo, hi = 20.0, 1000.0
+        dlg = LegendRangeDialog(self, current_lo=lo, current_hi=hi)
+        dlg.range_accepted.connect(self._scene.set_legend_clim)
+        dlg.range_reset.connect(self._scene.reset_legend_clim)
+        dlg.exec()
 
     def _on_toggle_axis_marker(self) -> None:
         """Show or hide the 3-D axis origin marker in the viewport."""
@@ -801,6 +992,7 @@ class MainWindow(QMainWindow):
 
         cfg: AnalysisConfig = config  # type: ignore[assignment]
         log.info("Starting analysis: %s", cfg.summary())
+        self._last_config = cfg
 
         self._worker = AnalysisWorker(self._model, self._fire_sources, cfg)
 
@@ -841,6 +1033,11 @@ class MainWindow(QMainWindow):
         self._action_export_excel.setEnabled(True)
         self._action_save_animation.setEnabled(True)
         self._action_threshold_overlay.setEnabled(True)
+        self._action_legend_range.setEnabled(True)
+        self._action_show_mesh.setEnabled(True)
+        self._mesh_overlay_eids = list(tf.element_ids)
+        if self._action_show_mesh.isChecked():
+            self._rebuild_analysis_mesh_overlay()
 
         if self._progress_dlg is not None:
             self._progress_dlg.set_complete()

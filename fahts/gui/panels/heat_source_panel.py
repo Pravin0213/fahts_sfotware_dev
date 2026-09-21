@@ -96,7 +96,7 @@ class HeatSourcePanel(QWidget):
         self._btn_add_zone = QPushButton("Add Zone…")
         self._btn_add_ball = QPushButton("Add Ball…")
         self._btn_add_zone.setToolTip("Add a rectangular fire zone")
-        self._btn_add_ball.setToolTip("Add a two-zone radiation ball (USERFLUX type 0)")
+        self._btn_add_ball.setToolTip("Add a radiation ball (spherical prescribed-flux source)")
         self._btn_add_zone.clicked.connect(self._on_add_zone)
         self._btn_add_ball.clicked.connect(self._on_add_ball)
         add_row.addWidget(self._btn_add_zone)

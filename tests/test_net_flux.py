@@ -130,7 +130,8 @@ class TestExposureFlags:
         assert all(v == 1.0 for v in flags.values())
 
     def test_tolerance_extends_zone(self):
-        beam, nodes = _make_beam((2.5, 0.0, 0.0))  # just outside 2m half-extent
+        # midpoint (2.6) and n1 (2.1) are both strictly outside ±2.0 half-extent
+        beam, nodes = _make_beam((2.6, 0.0, 0.0))
         zone = _zone_at(d=4.0)  # extends to ±2.0 in each direction
         assert all(v == 0.0 for v in exposure_flags(beam, [zone], nodes).values())
         assert all(v == 1.0 for v in exposure_flags(beam, [zone], nodes, tolerance=0.6).values())

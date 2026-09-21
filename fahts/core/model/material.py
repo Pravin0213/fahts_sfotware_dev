@@ -21,6 +21,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+# The standard from which EN 1993-1-2 thermal property formulas (k, cp, ρ) are
+# taken.  Exposed here so callers (AnalysisConfig, tests) can reference the
+# same string without hard-coding it.
+MATERIAL_STANDARD: str = "EN1993-1-2:2005 Annex C"
+
 
 # ── USFOS thermpar × tempdepy tables (from fahts.fem) ────────────────────────
 # tempdepy 100 — specific heat multiplier (c_ref = 510 J/kg·K)
@@ -73,6 +78,11 @@ class SteelMaterial:
     alpha_T: float  # thermal expansion coefficient [1/K]
     name: str = "Steel"
     usfos_mode: bool = field(default=False, compare=False, repr=False)
+    # Reference base values for the USFOS thermpar × tempdepy property model
+    # (k_ref/c_ref × fixed tempdepy factor curve).  Editable via the GUI Material
+    # dialog; defaults match usfos_verification_results/fahts.fem.
+    c_ref: float = field(default=_USFOS_C_REF, compare=False, repr=False)  # J/(kg·K)
+    k_ref: float = field(default=_USFOS_K_REF, compare=False, repr=False)  # W/(m·K)
 
     # ── EN 1993-1-2 Annex C thermal properties ────────────────────────────────
 
@@ -116,7 +126,7 @@ class SteelMaterial:
         """
         T = float(np.clip(T_C, 0.0, 1300.0))
         factor = float(np.interp(T, _USFOS_K_T, _USFOS_K_F))
-        return _USFOS_K_REF * factor
+        return self.k_ref * factor
 
     def _specific_heat_usfos(self, T_C: float) -> float:
         """
@@ -126,7 +136,7 @@ class SteelMaterial:
         """
         T = float(np.clip(T_C, 0.0, 1300.0))
         factor = float(np.interp(T, _USFOS_CP_T, _USFOS_CP_F))
-        return _USFOS_C_REF * factor
+        return self.c_ref * factor
 
     # ── Public API ────────────────────────────────────────────────────────────
 

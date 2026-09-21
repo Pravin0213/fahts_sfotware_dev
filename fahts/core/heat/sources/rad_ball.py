@@ -1,16 +1,45 @@
 """
-Radiation ball (spherical) fire source — USFOS USERFLUX type 0.
+Radiation ball (spherical) prescribed-flux fire source.
 
-Two-zone prescribed flux source:
-  - Inner zone (distance ≤ r1): flux = flux1 [W/m²]
-  - Outer zone (r1 < distance ≤ r2): flux = flux2 [W/m²]
-  - Beyond r2: not exposed (flux = 0)
+Single-zone model: a sphere of radius ``radius`` centred at ``center`` whose
+outer surface radiates uniformly at ``flux`` [W/m²] (a Lambertian/diffuse
+emitter with constant exitance).  There is no calibration curve to fit — the
+incident flux at any point in space follows directly from the exact
+point-to-sphere radiative view factor:
 
-No convective or Stefan-Boltzmann term — radiation is fully prescribed by the
-flux values. Set epsilon_m = 0 in the solver when using RadiationBall.
+    d <= radius   : q = flux                                  (engulfed)
+    d >  radius   : q = flux * (radius / d)**2 * cos(theta)    (exterior)
 
-USFOS USERFLUX format:
-    USERFLUX  0  set  cx  cy  cz  r1  flux1  r2  flux2
+where ``d`` is the distance from the ball centre to the target point and
+``theta`` is the angle between the target's outward normal and the direction
+from the target toward the ball centre.
+
+Derivation of the two regimes
+------------------------------
+**Exterior (d > radius):** ``F = (R/d)^2 * cos(theta)`` is the classical
+closed-form "differential area to sphere" configuration factor for a point
+outside a uniformly-emitting (Lambertian) sphere — see e.g. Incropera,
+*Fundamentals of Heat and Mass Transfer*, Table 13.2.  It is *exact*, not a
+discretised approximation: a uniformly luminous sphere produces the same
+irradiance at any external point as a point source of equal total radiant
+power placed at its centre, scaled by the receiver's own cosine law.  Faces
+whose outward normal points away from the ball (``cos(theta) <= 0``) receive
+zero — this also correctly self-shadows the far side of a convex sphere with
+no separate occlusion test needed.
+
+**Interior / engulfed (d <= radius):** a point fully enclosed by a closed
+surface subtends the *entire* surface (solid angle 4*pi) regardless of its own
+orientation — every ray leaving it in every direction eventually strikes the
+enclosing wall.  For a uniform-exitance enclosure this is the standard cavity-
+radiation result: irradiance at any interior point equals the wall's own
+exitance, isotropically, independent of position or facing direction.  So an
+engulfed element receives ``flux`` on *every* exposed face, with no cos(theta)
+weighting — this is not a special-cased shortcut, it is the d -> radius limit
+of the same physics.
+
+No convective or Stefan-Boltzmann fire term — radiation is fully prescribed by
+`flux`.  Set epsilon_m = 0 in the solver when using RadiationBall; steel
+re-radiation is applied separately via eps_rerad.
 """
 from __future__ import annotations
 
@@ -24,31 +53,27 @@ from fahts.core.heat.sources.base_source import HeatSource
 @dataclass
 class RadiationBall(HeatSource):
     """
-    Spherical two-zone radiation ball heat source (USFOS USERFLUX type 0).
+    Spherical prescribed-flux radiation ball heat source.
 
     Parameters
     ----------
     name   : identifier string
     center : (3,) array — global coordinates of ball centre [m]
-    r1     : inner zone radius [m]; elements at distance ≤ r1 receive flux1
-    flux1  : prescribed irradiance for inner zone [W/m²]
-    r2     : outer zone radius [m]; elements at r1 < distance ≤ r2 receive flux2
-    flux2  : prescribed irradiance for outer zone [W/m²]
+    radius : ball radius [m]
+    flux   : uniform prescribed irradiance leaving the ball's outer surface [W/m²]
     active : whether this source participates in the analysis
     """
     name: str
     center: np.ndarray   # shape (3,) [m]
-    r1: float            # inner zone radius [m]
-    flux1: float         # inner zone prescribed flux [W/m²]
-    r2: float            # outer zone radius [m]
-    flux2: float         # outer zone prescribed flux [W/m²]
+    radius: float        # ball radius [m]
+    flux: float          # prescribed surface exitance [W/m²]
     active: bool = field(default=True)
 
     def __post_init__(self) -> None:
-        if self.r1 <= 0:
-            raise ValueError(f"r1 must be positive, got {self.r1}")
-        if self.r2 <= self.r1:
-            raise ValueError(f"r2 ({self.r2}) must be greater than r1 ({self.r1})")
+        if self.radius <= 0:
+            raise ValueError(f"radius must be positive, got {self.radius}")
+        if self.flux <= 0.0:
+            raise ValueError(f"flux must be positive, got {self.flux}")
 
     # ── HeatSource ABC ────────────────────────────────────────────────────────
 
@@ -57,64 +82,62 @@ class RadiationBall(HeatSource):
         return 20.0
 
     def bounds(self) -> tuple[np.ndarray, np.ndarray]:
-        """Bounding box of the outer sphere [m]."""
-        r = self.r2
+        """Bounding box of the sphere [m]."""
+        r = self.radius
         return self.center - r, self.center + r
 
     # ── RadiationBall-specific ────────────────────────────────────────────────
 
-    def flux_at(self, distance: float) -> float:
+    def max_flux_at_distance(self, distance: float) -> float:
         """
-        Return prescribed flux [W/m²] for an element at *distance* from centre.
+        Direction-agnostic upper bound on incident flux [W/m²] at *distance*
+        from the ball centre — the value a directly-facing receiver (or any
+        engulfed receiver) would see.  Used for coarse element screening; the
+        true per-face value also depends on orientation, see :meth:`incident_flux`.
+        """
+        if distance <= self.radius:
+            return self.flux
+        return self.flux * (self.radius / distance) ** 2
 
-        Returns flux1 for distance ≤ r1, flux2 for r1 < distance ≤ r2, 0 beyond r2.
+    def incident_flux(
+        self,
+        point: np.ndarray,
+        normal: np.ndarray | None = None,
+    ) -> float:
         """
-        if distance <= self.r1:
-            return self.flux1
-        if distance <= self.r2:
-            return self.flux2
-        return 0.0
+        Exact incident flux [W/m²] at *point* with outward unit *normal*.
+
+        ``normal=None`` returns the direction-agnostic magnitude from
+        :meth:`max_flux_at_distance` (no cosine clipping applied).
+        """
+        r_vec = self.center - np.asarray(point, dtype=float)
+        d = float(np.linalg.norm(r_vec))
+        if d <= self.radius:
+            return self.flux
+        base = self.flux * (self.radius / d) ** 2
+        if normal is None:
+            return base
+        r_hat = r_vec / d
+        cos_theta = float(np.dot(np.asarray(normal, dtype=float), r_hat))
+        return base * cos_theta if cos_theta > 0.0 else 0.0
 
     def exposed_element_ids(
         self,
         elements: dict,
         nodes: dict,
+        min_flux: float = 1.0,
     ) -> dict[int, float]:
         """
-        Return {eid: flux} for beam elements whose midpoints fall within r2.
-
-        The flux value is zone-dependent (flux1 or flux2). Elements beyond r2
-        are not included in the result.
+        Return {eid: max_flux} for beam elements whose midpoint receives more
+        than *min_flux* [W/m²] (direction-agnostic upper bound — see
+        :meth:`max_flux_at_distance`).  Geometry-only screening; the caller is
+        responsible for filtering on ``active`` status.
         """
         result: dict[int, float] = {}
         for beam in elements.values():
             mid = beam.midpoint(nodes)
             dist = float(np.linalg.norm(mid - self.center))
-            flux = self.flux_at(dist)
-            if flux > 0.0:
+            flux = self.max_flux_at_distance(dist)
+            if flux > min_flux:
                 result[beam.eid] = flux
-        return result
-
-    def falloff_element_ids(
-        self,
-        elements: dict,
-        nodes: dict,
-        min_flux: float = 1.0,
-    ) -> set[int]:
-        """
-        Return element IDs beyond r2 where the inverse-square falloff flux
-        could exceed min_flux [W/m²] (using cos θ = 1 as an upper bound).
-
-        FAHTS §3.5.4 concentrated source: q = flux2 · (r2/r)² · cos(θ)
-        Pre-filter: flux2 · (r2/r)² > min_flux  →  r < r2 · √(flux2/min_flux)
-        """
-        if self.flux2 <= 0.0 or min_flux <= 0.0:
-            return set()
-        r_cutoff = self.r2 * (self.flux2 / min_flux) ** 0.5
-        result: set[int] = set()
-        for beam in elements.values():
-            mid = beam.midpoint(nodes)
-            dist = float(np.linalg.norm(mid - self.center))
-            if dist > self.r2 and dist <= r_cutoff:
-                result.add(beam.eid)
         return result

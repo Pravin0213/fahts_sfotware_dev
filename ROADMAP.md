@@ -707,6 +707,7 @@ Update to write the computed β_z and β_y instead.
 | 5.8 | Nastran BDF reader (from legacy code) | `core/io/nastran_reader.py` | ⬜ |
 | 5.9 | Multiple simultaneous fire zones | `heat/sources/` | ⬜ |
 | 5.10 | Project save / load (.fahts JSON project file) | `core/io/project_file.py` | ⬜ |
+| 5.11 | **Fix: cross-element thermal coupling.** Currently each beam solves its own K/M/Q in total isolation — no conduction between adjacent members through shared structural joints, unlike real SINTEF FAHTS (which merges coincident mesh nodes across elements into one global assembled system). See `heat/solver/CLAUDE.md` "Known Limitation" for full analysis. Assigned to Fable. | `heat/solver/` | ⬜ |
 
 ---
 

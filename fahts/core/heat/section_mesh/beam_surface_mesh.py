@@ -42,6 +42,10 @@ class BeamSurfaceMesh:
     thicknesses: np.ndarray      # (n_quads,)
     local_cols: np.ndarray       # (n_quads, 2)
     local_coords_2d: np.ndarray | None = field(default=None, repr=False)  # (n_quads, 4, 2)
+    # Quad indices exposed to fire; empty = all quads (default for backward compat)
+    outer_face_indices: list[int] = field(default_factory=list)
+    # Node indices on the sealed inner surface (BOX/PIPE hollow cavity); empty = none
+    inner_node_indices: list[int] = field(default_factory=list)
 
     @property
     def n_nodes(self) -> int:

@@ -207,6 +207,35 @@ def assemble_C_lumped(mesh: SectionMesh, rho: float, cp: float) -> np.ndarray:
     return C
 
 
+def assemble_C_consistent(mesh: SectionMesh, rho: float, cp: float) -> sp.csr_matrix:
+    """
+    Assemble the global consistent capacitance matrix from Quad4 elements.
+
+    Args:
+        mesh: SectionMesh from a 2-D section mesher.
+        rho:  density [kg/m³].
+        cp:   specific heat [J/(kg·K)].
+
+    Returns:
+        (n_nodes, n_nodes) sparse CSR mass matrix [J/(m·K)].
+        Sum of all entries equals ρ·cₚ·A_steel.
+    """
+    n = mesh.n_nodes
+    rows: list[int] = []
+    cols: list[int] = []
+    vals: list[float] = []
+
+    for quad in mesh.quads:
+        C_e = quad4_capacity_matrix(mesh.nodes[quad], rho, cp, lumped=False)
+        for li in range(4):
+            for lj in range(4):
+                rows.append(int(quad[li]))
+                cols.append(int(quad[lj]))
+                vals.append(C_e[li, lj])
+
+    return sp.csr_matrix((vals, (rows, cols)), shape=(n, n))
+
+
 # ── Robin boundary condition ──────────────────────────────────────────────────
 
 def add_robin_bc(

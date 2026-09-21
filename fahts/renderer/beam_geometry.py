@@ -26,7 +26,8 @@ BOX corner layout in the cross-section plane (local y–z):
 from __future__ import annotations
 
 import math
-from typing import Literal
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import numpy as np
 import pyvista as pv
@@ -177,8 +178,8 @@ def build_beam_mesh(
     nodes: dict[int, Node],
 ) -> pv.PolyData:
     """
-    Extrude a BOX cross-section along the beam.
-    Returns 6-face closed box shell PolyData with cell-data ``element_id``.
+    Build a BOX cross-section as 4 flat mid-surface panels (USFOS-style, no end caps).
+    Returns 4-face PolyData with cell-data ``element_id``.
     """
     p1, p2, direction = _eccentric_endpoints(element, nodes)
 
@@ -189,13 +190,12 @@ def build_beam_mesh(
     c1 = _corners_global(p2, ly, lz, offsets)
     pts = np.vstack([c0, c1])
 
+    # 4 lateral panels only — no end caps (USFOS render style)
     faces = np.array([
-        [4, 0, 1, 5, 4],   # top side
-        [4, 1, 2, 6, 5],   # right side
-        [4, 2, 3, 7, 6],   # bottom side
-        [4, 3, 0, 4, 7],   # left side
-        [4, 0, 3, 2, 1],   # end-0 (n1), normal → -lx
-        [4, 4, 5, 6, 7],   # end-1 (n2), normal → +lx
+        [4, 0, 1, 5, 4],
+        [4, 1, 2, 6, 5],
+        [4, 2, 3, 7, 6],
+        [4, 3, 0, 4, 7],
     ], dtype=np.int_)
 
     mesh = pv.PolyData(pts, faces.ravel())
@@ -210,47 +210,31 @@ def build_pipe_mesh(
     n_sides: int = _PIPE_SIDES,
 ) -> pv.PolyData:
     """
-    Extrude a hollow circular PIPE cross-section along the beam.
+    Build a PIPE as a single outer-surface cylindrical shell (USFOS-style, no wall thickness).
 
-    Point layout (4 rings × n_sides):
-      O1 = 0          outer ring at p1
-      O2 = n_sides    outer ring at p2
-      I1 = 2*n_sides  inner ring at p1
-      I2 = 3*n_sides  inner ring at p2
+    Point layout (2 rings × n_sides):
+      O1 = 0         outer ring at p1
+      O2 = n_sides   outer ring at p2
 
-    Faces (4 × n_sides quads):
-      outer lateral, inner lateral, end-0 annular cap, end-1 annular cap
+    Faces: n_sides outer lateral quads only.
     """
     p1, p2, direction = _eccentric_endpoints(element, nodes)
 
     lx, ly, lz = _local_frame(direction, element.local_z)
     outer_ring = _pipe_ring_2d(n_sides, section.outer_radius)
-    inner_ring = _pipe_ring_2d(n_sides, section.inner_radius)
 
-    O1, O2 = 0,          n_sides
-    I1, I2 = 2 * n_sides, 3 * n_sides
-
+    O1, O2 = 0, n_sides
     pts = np.vstack([
         _corners_global(p1, ly, lz, outer_ring),   # O1
         _corners_global(p2, ly, lz, outer_ring),   # O2
-        _corners_global(p1, ly, lz, inner_ring),   # I1
-        _corners_global(p2, ly, lz, inner_ring),   # I2
     ])
 
     face_list: list[int] = []
     for i in range(n_sides):
         j = (i + 1) % n_sides
-        # Outer lateral face
         face_list += [4, O1+i, O1+j, O2+j, O2+i]
-        # Inner lateral face (reversed winding → inward normal)
-        face_list += [4, I1+i, I2+i, I2+j, I1+j]
-        # End-0 annular cap (outward normal → -lx)
-        face_list += [4, O1+i, O1+j, I1+j, I1+i]
-        # End-1 annular cap (outward normal → +lx)
-        face_list += [4, O2+i, I2+i, I2+j, O2+j]
 
     mesh = pv.PolyData(pts, np.array(face_list, dtype=np.int_))
-    # Explicit cell_data assignment avoids PyVista ambiguity when n_cells == n_points
     mesh.cell_data["element_id"] = np.full(mesh.n_cells, element.eid, dtype=np.int32)
     return mesh
 
@@ -261,38 +245,48 @@ def build_isection_mesh(
     nodes: dict[int, Node],
 ) -> pv.PolyData:
     """
-    Extrude an I-beam cross-section along the beam.
-    Returns 12 lateral quad faces + 6 end-cap quad faces (3 per end).
+    Build an I-beam as 3 flat mid-surface panels (USFOS-style, no wall thickness):
+    top flange, web, bottom flange.  3 cells, 12 points.
     """
     p1, p2, direction = _eccentric_endpoints(element, nodes)
-
     lx, ly, lz = _local_frame(direction, element.local_z)
-    offsets = _ihprofil_corners_2d(section)   # (12, 2)
 
-    c0 = _corners_global(p1, ly, lz, offsets)   # (12, 3) at end-0
-    c1 = _corners_global(p2, ly, lz, offsets)   # (12, 3) at end-1
-    pts = np.vstack([c0, c1])                   # (24, 3)
+    lz_h    = section.h / 2    # half total height → local-z
+    lyf_top = section.bf_top / 2
+    lyf_bot = section.bf_bot / 2
 
+    def _pt(p: np.ndarray, y: float, z: float) -> np.ndarray:
+        return p + y * ly + z * lz
+
+    # 5 panels — each flange is split at y=0 (the web centreline) so the
+    # shared edge between the two halves renders as a clean polygon boundary
+    # line rather than a z-fighting coincident edge.  Web spans full height.
+    panels: list[list[np.ndarray]] = [
+        # Top flange — left half  (y: -lyf_top → 0, z = +lz_h)
+        [_pt(p1, -lyf_top, lz_h), _pt(p1, 0.0, lz_h),
+         _pt(p2, 0.0,      lz_h), _pt(p2, -lyf_top, lz_h)],
+        # Top flange — right half (y: 0 → +lyf_top, z = +lz_h)
+        [_pt(p1, 0.0,      lz_h), _pt(p1, lyf_top, lz_h),
+         _pt(p2, lyf_top,  lz_h), _pt(p2, 0.0,     lz_h)],
+        # Web — y = 0, full height
+        [_pt(p1, 0.0, -lz_h), _pt(p1, 0.0, lz_h),
+         _pt(p2, 0.0,  lz_h), _pt(p2, 0.0, -lz_h)],
+        # Bottom flange — left half  (y: -lyf_bot → 0, z = -lz_h)
+        [_pt(p1, -lyf_bot, -lz_h), _pt(p1, 0.0,     -lz_h),
+         _pt(p2, 0.0,      -lz_h), _pt(p2, -lyf_bot, -lz_h)],
+        # Bottom flange — right half (y: 0 → +lyf_bot, z = -lz_h)
+        [_pt(p1, 0.0,      -lz_h), _pt(p1, lyf_bot, -lz_h),
+         _pt(p2, lyf_bot,  -lz_h), _pt(p2, 0.0,     -lz_h)],
+    ]
+
+    all_pts: list[np.ndarray] = []
     face_list: list[int] = []
+    for i, panel in enumerate(panels):
+        base = i * 4
+        all_pts.extend(panel)
+        face_list += [4, base, base + 1, base + 2, base + 3]
 
-    # 12 lateral quad faces (connect consecutive corners end-0 → end-1)
-    for i in range(12):
-        j = (i + 1) % 12
-        face_list += [4, i, j, j + 12, i + 12]
-
-    # End-0 cap (3 quads, winding gives outward normal towards -lx):
-    #   top flange [0,11,2,1], web [3,10,9,4], bottom flange [5,8,7,6]
-    face_list += [4, 0, 11, 2, 1]
-    face_list += [4, 3, 10, 9, 4]
-    face_list += [4, 5, 8, 7, 6]
-
-    # End-1 cap (3 quads, same corner sets offset by 12 → normal towards +lx):
-    #   top flange [12,13,14,23], web [15,16,21,22], bottom flange [17,18,19,20]
-    face_list += [4, 12, 13, 14, 23]
-    face_list += [4, 15, 16, 21, 22]
-    face_list += [4, 17, 18, 19, 20]
-
-    mesh = pv.PolyData(pts, np.array(face_list, dtype=np.int_))
+    mesh = pv.PolyData(np.array(all_pts, dtype=float), np.array(face_list, dtype=np.int_))
     mesh["element_id"] = np.full(mesh.n_cells, element.eid, dtype=np.int32)
     return mesh
 
@@ -390,6 +384,7 @@ def mesh_section_at(
 def build_model_mesh(
     model: FEMModel,
     skip_missing: bool = True,
+    n_pipe_sides: int = _PIPE_SIDES,
 ) -> pv.PolyData:
     """
     Build a single merged PolyData for all beams and shells in *model*.
@@ -418,7 +413,7 @@ def build_model_mesh(
         if isinstance(section, BoxSection):
             mesh = build_beam_mesh(elem, section, model.nodes)
         elif isinstance(section, PipeSection):
-            mesh = build_pipe_mesh(elem, section, model.nodes)
+            mesh = build_pipe_mesh(elem, section, model.nodes, n_sides=n_pipe_sides)
         elif isinstance(section, ISection):
             mesh = build_isection_mesh(elem, section, model.nodes)
         else:
@@ -447,6 +442,410 @@ def build_model_mesh(
     for m in meshes[1:]:
         combined = combined.merge(m)
     return combined
+
+
+def build_analysis_mesh_overlay(
+    model: FEMModel,
+    solved_element_ids: list[int],
+    config: Any,
+    centroid: np.ndarray,
+) -> pv.PolyData:
+    """
+    Build a quad-surface PolyData matching the FEM analysis mesh for all solved elements.
+
+    Each element's BeamSurfaceMesh (built with the same mesher params used during
+    analysis) is transformed from beam-local coords to global 3-D scene coords.
+    The returned mesh should be rendered as a wireframe overlay so the user can
+    see the exact mesh density that was used in the solver.
+
+    Parameters
+    ----------
+    model             : loaded FEMModel.
+    solved_element_ids: element IDs that were solved (TemperatureField.element_ids).
+    config            : AnalysisConfig — carries n_top/n_side/n_length etc.
+    centroid          : model centroid [m]; matches the shift applied by build_model_mesh.
+
+    Returns
+    -------
+    pv.PolyData with one quad face per analysis mesh element.
+    Empty PolyData if no supported elements are found.
+    """
+    from fahts.core.heat.section_mesh.box_surface_mesher import BoxSurfaceMesher
+    from fahts.core.heat.section_mesh.iprofil_surface_mesher import IProfileSurfaceMesher
+    from fahts.core.heat.section_mesh.pipe_surface_mesher import PipeSurfaceMesher
+    from fahts.core.heat.section_mesh.plate_surface_mesher import PlateSurfaceMesher
+    from fahts.core.model.section import PlateSection
+
+    all_pts: list[np.ndarray] = []
+    face_list: list[int] = []
+    cell_eid: list[int] = []
+    pt_offset = 0
+
+    for eid in solved_element_ids:
+        elem = model.elements.get(eid)
+        if elem is None or elem.direction is None:
+            continue
+        section = model.sections.get(elem.geom_id)
+
+        if isinstance(section, BoxSection):
+            bsm = BoxSurfaceMesher(
+                section, elem.length,
+                config.n_top, config.n_side, config.n_length,
+            ).build()
+        elif isinstance(section, ISection):
+            bsm = IProfileSurfaceMesher(
+                section, elem.length,
+                config.n_top_i, config.n_side_i, config.n_bottom_i, config.n_length_i,
+            ).build()
+        elif isinstance(section, PipeSection):
+            bsm = PipeSurfaceMesher(
+                section, elem.length,
+                config.c_circ, config.n_length_p,
+            ).build()
+        else:
+            continue
+
+        # Transform beam-local nodes (x=axial, y=width, z=height) to global scene coords
+        p1_eff, _p2, direction = _eccentric_endpoints(elem, model.nodes)
+        lx, ly, lz = _local_frame(direction, elem.local_z)
+
+        if isinstance(section, PipeSection):
+            nodes = bsm.nodes.copy()
+            nodes[:, 1:3] *= 1.01  # push overlay outside solid surface to avoid z-fighting
+        else:
+            nodes = bsm.nodes  # (n_nodes, 3)
+        global_pts = (
+            p1_eff[np.newaxis, :]
+            + nodes[:, 0:1] * lx[np.newaxis, :]
+            + nodes[:, 1:2] * ly[np.newaxis, :]
+            + nodes[:, 2:3] * lz[np.newaxis, :]
+        ) - centroid[np.newaxis, :]
+
+        all_pts.append(global_pts)
+        for quad in bsm.quads:
+            face_list += [
+                4,
+                int(quad[0]) + pt_offset,
+                int(quad[1]) + pt_offset,
+                int(quad[2]) + pt_offset,
+                int(quad[3]) + pt_offset,
+            ]
+            cell_eid.append(eid)
+        pt_offset += len(nodes)
+
+    # ── Shell elements (QUADSHEL only; PlateSurfaceMesher outputs global coords) ─
+    for se in model.shell_elements.values():
+        if len(se.nodes) != 4:
+            continue  # TRISHELL — no surface mesher
+        section = model.sections.get(se.geom_id)
+        if not isinstance(section, PlateSection):
+            continue
+        corners = np.array([model.nodes[nid].xyz for nid in se.nodes], dtype=float)
+        try:
+            bsm = PlateSurfaceMesher(
+                section, corners, config.mesh_12, config.mesh_14,
+            ).build()
+        except ValueError:
+            continue
+
+        # PlateSurfaceMesher nodes are already in global 3D coords
+        global_pts = bsm.nodes - centroid[np.newaxis, :]
+        all_pts.append(global_pts)
+        for quad in bsm.quads:
+            face_list += [
+                4,
+                int(quad[0]) + pt_offset,
+                int(quad[1]) + pt_offset,
+                int(quad[2]) + pt_offset,
+                int(quad[3]) + pt_offset,
+            ]
+            cell_eid.append(se.eid)
+        pt_offset += len(bsm.nodes)
+
+    if not all_pts:
+        return pv.PolyData()
+
+    pts = np.vstack(all_pts)
+    mesh = pv.PolyData(pts, np.array(face_list, dtype=np.intp))
+    mesh.cell_data["element_id"] = np.array(cell_eid, dtype=np.int32)
+    return mesh
+
+
+@dataclass
+class MeshInspectorData:
+    """
+    Pre-built FEM surface mesh with topology metadata for interactive connectivity inspection.
+
+    Attributes
+    ----------
+    mesh            : global scene-coord quad PolyData (inspector picking target).
+                      Cell data: ``inspector_beam_eid``, ``inspector_quad_idx``.
+    cell_beam_eid   : (n_cells,) beam/shell element ID per cell.
+    cell_quad_idx   : (n_cells,) local quad index within that element.
+    beam_quads      : eid → (n_quads, 4) local node index connectivity.
+    beam_cell_offset: eid → index of first cell for this element in *mesh*.
+    beam_node_offset: eid → index of first global point for this element in *mesh*.
+    beam_node_gdof  : eid → (n_nodes,) global DOF index per local node.
+                      Matches the DOF numbering used by the solver's K-matrix assembly:
+                      co-located nodes from different elements share the same index.
+    """
+    mesh: pv.PolyData
+    cell_beam_eid: np.ndarray
+    cell_quad_idx: np.ndarray
+    beam_quads: dict[int, np.ndarray]
+    beam_cell_offset: dict[int, int]
+    beam_node_offset: dict[int, int]
+    beam_node_gdof: dict[int, np.ndarray]
+
+
+def _compute_inspector_gdof_map(
+    eid_world_pts: dict[int, np.ndarray],
+    eid_meshes: dict[int, Any],
+    model: Any,
+    tol: float = 1e-3,
+    struct_tol: float = 0.025,
+) -> dict[int, np.ndarray]:
+    """
+    Assign global DOF indices matching the solver's two-pass K-matrix assembly.
+
+    Pass 1 — 1 mm proximity: exact end-to-end merges.
+    Pass 2 — structural-node-aware (25 mm): for every FEM structural node,
+    merges end-face mesh nodes from different elements within struct_tol.
+    Catches perpendicular-crossing junctions where web offset places nearest
+    nodes ~tw/√2 ≈ 4–14 mm apart.
+
+    Returns {eid: (n_nodes,) int array} mapping local node → global DOF index.
+    """
+    from scipy.spatial import cKDTree
+
+    coords: list[np.ndarray] = []
+    labels: list[tuple[int, int]] = []
+    for eid, pts in eid_world_pts.items():
+        for i in range(len(pts)):
+            coords.append(pts[i])
+            labels.append((eid, i))
+
+    n = len(labels)
+    if n == 0:
+        return {}
+
+    parent = list(range(n))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    coords_arr = np.array(coords)
+
+    # Pass 1: exact proximity
+    tree = cKDTree(coords_arr)
+    for i, j in tree.query_pairs(tol):
+        _union(i, j)
+
+    # Pass 2: structural-node-aware merge
+    if model is not None:
+        label_to_flat: dict[tuple[int, int], int] = {lbl: i for i, lbl in enumerate(labels)}
+        for nid in model.nodes:
+            end_flat: list[int] = []
+            end_eids: list[int] = []
+            for eid, mesh in eid_meshes.items():
+                elem = model.elements.get(eid)
+                if elem is None:
+                    continue
+                if elem.n1 != nid and elem.n2 != nid:
+                    continue
+                if eid not in eid_world_pts:
+                    continue
+                x_target = 0.0 if elem.n1 == nid else elem.length
+                x_local  = mesh.nodes[:, 0]
+                for local_idx in np.where(np.abs(x_local - x_target) < 1e-9)[0]:
+                    key = (eid, int(local_idx))
+                    if key in label_to_flat:
+                        end_flat.append(label_to_flat[key])
+                        end_eids.append(eid)
+            if len(end_flat) < 2:
+                continue
+            local_tree = cKDTree(coords_arr[end_flat])
+            for li, lj in local_tree.query_pairs(struct_tol):
+                if end_eids[li] != end_eids[lj]:
+                    _union(end_flat[li], end_flat[lj])
+
+    root_to_dof: dict[int, int] = {}
+    dof_idx = 0
+    label_to_dof: dict[tuple[int, int], int] = {}
+    for i, lbl in enumerate(labels):
+        root = _find(i)
+        if root not in root_to_dof:
+            root_to_dof[root] = dof_idx
+            dof_idx += 1
+        label_to_dof[lbl] = root_to_dof[root]
+
+    return {
+        eid: np.array([label_to_dof[(eid, i)] for i in range(len(pts))], dtype=np.intp)
+        for eid, pts in eid_world_pts.items()
+    }
+
+
+def build_mesh_inspector_data(
+    model: FEMModel,
+    centroid: np.ndarray,
+    config: Any = None,
+) -> MeshInspectorData:
+    """
+    Build ``MeshInspectorData`` for all supported elements in *model*.
+
+    Surface meshes are built using params from *config* (an AnalysisConfig duck-type);
+    default mesh densities are used when *config* is ``None``.
+
+    The returned ``mesh`` has the same centroid shift as ``build_model_mesh``
+    so it overlays correctly on the rendered structure.
+    """
+    from fahts.core.heat.section_mesh.box_surface_mesher import BoxSurfaceMesher
+    from fahts.core.heat.section_mesh.iprofil_surface_mesher import IProfileSurfaceMesher
+    from fahts.core.heat.section_mesh.pipe_surface_mesher import PipeSurfaceMesher
+    from fahts.core.heat.section_mesh.plate_surface_mesher import PlateSurfaceMesher
+    from fahts.core.model.section import PlateSection
+
+    n_top    = getattr(config, "n_top",      2)
+    n_side   = getattr(config, "n_side",     3)
+    n_length = getattr(config, "n_length",   4)
+    n_top_i  = getattr(config, "n_top_i",    4)
+    n_side_i = getattr(config, "n_side_i",   2)
+    n_bot_i  = getattr(config, "n_bottom_i", 2)
+    n_len_i  = getattr(config, "n_length_i", 2)
+    c_circ   = getattr(config, "c_circ",     8)
+    n_len_p  = getattr(config, "n_length_p", 4)
+    mesh_12  = getattr(config, "mesh_12",    4)
+    mesh_14  = getattr(config, "mesh_14",    2)
+
+    all_pts: list[np.ndarray] = []
+    face_list: list[int] = []
+    cell_beam_eid: list[int] = []
+    cell_quad_idx: list[int] = []
+    beam_quads: dict[int, np.ndarray] = {}
+    beam_cell_offset: dict[int, int] = {}
+    beam_node_offset: dict[int, int] = {}
+    # Per-element world-space positions and mesh objects for DOF merging.
+    _eid_world_pts: dict[int, np.ndarray] = {}
+    _eid_meshes: dict[int, Any] = {}
+    pt_offset = 0
+    cell_offset = 0
+
+    for eid, elem in model.elements.items():
+        if elem.direction is None:
+            continue
+        section = model.sections.get(elem.geom_id)
+
+        if isinstance(section, BoxSection):
+            bsm = BoxSurfaceMesher(section, elem.length, n_top, n_side, n_length).build()
+        elif isinstance(section, ISection):
+            bsm = IProfileSurfaceMesher(
+                section, elem.length, n_top_i, n_side_i, n_bot_i, n_len_i,
+            ).build()
+        elif isinstance(section, PipeSection):
+            bsm = PipeSurfaceMesher(section, elem.length, c_circ, n_len_p).build()
+        else:
+            continue
+
+        p1_eff, _p2, direction = _eccentric_endpoints(elem, model.nodes)
+        lx, ly, lz_ax = _local_frame(direction, elem.local_z)
+        nodes_local = bsm.nodes  # (n_nodes, 3) beam-local coords
+        world_pts = (
+            p1_eff[np.newaxis, :]
+            + nodes_local[:, 0:1] * lx[np.newaxis, :]
+            + nodes_local[:, 1:2] * ly[np.newaxis, :]
+            + nodes_local[:, 2:3] * lz_ax[np.newaxis, :]
+        )
+        global_pts = world_pts - centroid[np.newaxis, :]
+
+        all_pts.append(global_pts)
+        _eid_world_pts[eid] = world_pts
+        _eid_meshes[eid]    = bsm
+        beam_quads[eid] = bsm.quads.copy()
+        beam_cell_offset[eid] = cell_offset
+        beam_node_offset[eid] = pt_offset
+
+        for q_idx, quad in enumerate(bsm.quads):
+            face_list += [4,
+                int(quad[0]) + pt_offset, int(quad[1]) + pt_offset,
+                int(quad[2]) + pt_offset, int(quad[3]) + pt_offset,
+            ]
+            cell_beam_eid.append(eid)
+            cell_quad_idx.append(q_idx)
+
+        pt_offset += len(nodes_local)
+        cell_offset += len(bsm.quads)
+
+    # QUADSHEL shell plates
+    for se in model.shell_elements.values():
+        if len(se.nodes) != 4:
+            continue
+        section = model.sections.get(se.geom_id)
+        if not isinstance(section, PlateSection):
+            continue
+        corners = np.array([model.nodes[nid].xyz for nid in se.nodes], dtype=float)
+        try:
+            bsm = PlateSurfaceMesher(section, corners, mesh_12, mesh_14).build()
+        except ValueError:
+            continue
+
+        world_pts = bsm.nodes.copy()
+        global_pts = world_pts - centroid[np.newaxis, :]
+        all_pts.append(global_pts)
+        _eid_world_pts[se.eid] = world_pts
+        _eid_meshes[se.eid]    = bsm
+        beam_quads[se.eid] = bsm.quads.copy()
+        beam_cell_offset[se.eid] = cell_offset
+        beam_node_offset[se.eid] = pt_offset
+
+        for q_idx, quad in enumerate(bsm.quads):
+            face_list += [4,
+                int(quad[0]) + pt_offset, int(quad[1]) + pt_offset,
+                int(quad[2]) + pt_offset, int(quad[3]) + pt_offset,
+            ]
+            cell_beam_eid.append(se.eid)
+            cell_quad_idx.append(q_idx)
+
+        pt_offset += len(bsm.nodes)
+        cell_offset += len(bsm.quads)
+
+    if not all_pts:
+        return MeshInspectorData(
+            mesh=pv.PolyData(),
+            cell_beam_eid=np.array([], dtype=np.int32),
+            cell_quad_idx=np.array([], dtype=np.int32),
+            beam_quads={},
+            beam_cell_offset={},
+            beam_node_offset={},
+            beam_node_gdof={},
+        )
+
+    pts = np.vstack(all_pts)
+    mesh = pv.PolyData(pts, np.array(face_list, dtype=np.intp))
+    eid_arr  = np.array(cell_beam_eid, dtype=np.int32)
+    qidx_arr = np.array(cell_quad_idx, dtype=np.int32)
+    mesh.cell_data["inspector_beam_eid"] = eid_arr
+    mesh.cell_data["inspector_quad_idx"] = qidx_arr
+
+    # ── Global DOF map: same two-pass merge as the solver ────────────────────
+    beam_node_gdof = _compute_inspector_gdof_map(_eid_world_pts, _eid_meshes, model)
+
+    return MeshInspectorData(
+        mesh=mesh,
+        cell_beam_eid=eid_arr,
+        cell_quad_idx=qidx_arr,
+        beam_quads=beam_quads,
+        beam_cell_offset=beam_cell_offset,
+        beam_node_offset=beam_node_offset,
+        beam_node_gdof=beam_node_gdof,
+    )
 
 
 def build_centreline_mesh(model: FEMModel) -> pv.PolyData:

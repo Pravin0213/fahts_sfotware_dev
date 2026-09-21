@@ -110,7 +110,7 @@ element_ids: list[int]
 
 ---
 
-## Current Status (2026-05-18)
+## Current Status (2026-05-31)
 
 | Phase | Status |
 |-------|--------|
@@ -118,6 +118,8 @@ element_ids: list[int]
 | Phase 2 — Heat Source Engine | ✅ Complete |
 | Phase 3 — Heat Transfer Solver | ✅ Complete (incl. 3E + 3F) |
 | Phase 4 — Results Visualisation | ✅ Complete |
+| **USFOS-style thin rendering** | **✅ Done** — BOX/PIPE/I-beam rendered as flat mid-surface panels; no wall thickness |
+| **Mesh Inspector** | **✅ Done** — "Inspect Mesh" toggle (shortcut I); click quad → see K-matrix neighbours |
 | **Phase 3E.8 — USFOS Benchmark** | **⬜ Next task** |
 | Phase 5 — Insulation + Advanced | ⬜ Not started |
 
@@ -136,6 +138,22 @@ Run: `python -m pytest tests/ -q`
 
 ---
 
+## Rendering
+
+`build_model_mesh` produces **USFOS-style thin panels** (no wall thickness rendered):
+- BOX → 4 lateral quads (no end caps); n_cells = 4 per beam
+- PIPE → outer ring quads only; n_cells = c_circ per pipe
+- I-beam → 3 flat panels (top flange / web / bottom flange); n_cells = 3 per I-beam
+
+FEM mesh nodes sit on the same surfaces → inspector overlay never buried inside geometry.
+
+The **Mesh Inspector** (View → Inspect Mesh, shortcut `I`) overlays the FEM surface mesh in
+cyan wireframe. Click any quad to see its 4 local node indices and the K-matrix neighbours
+(other quads in the same beam that share each node). Panel: `MeshInspectorPanel` in left sidebar.
+`build_mesh_inspector_data(model, centroid, config=None)` builds the data; cached in `MainWindow._mesh_inspector_data`.
+
+---
+
 ## Critical Gotchas
 
 - **FireZone fields:** `center` (not `centre`), `dims` (not `dimensions`)
@@ -144,7 +162,8 @@ Run: `python -m pytest tests/ -q`
 - **BELTEMP values are INCREMENTAL** — accumulate from T_initial=20°C
 - **UNITVEC** defines local z-axis of beam. `local_y = cross(local_x, UNITVEC)`, `local_z = cross(local_y, local_x)`
 - `model_file.fem` and `model_t1.fem` must always parse cleanly — smoke tests exist
-- **I-beam mesh topology:** Flanges are meshed at their **inner** faces (z = z_top_in / z_bot_in), not outer. Web is at y = **−tw/2** (not y=0 — `np.sign(0)=0` would zero the outward normal and kill RadiationBall flux). The `_flange_ys` helper forces y=−tw/2 into the flange grid so gid() creates shared T-junction nodes; this gives web↔flange heat conduction in K. See `iprofil_surface_mesher.py`.
+- **I-beam mesh topology:** Flanges are meshed at their **inner** faces (z = z_top_in / z_bot_in), not outer. Web is at y = **−tw/2** (not y=0 — `np.sign(0)=0` would zero the outward normal and kill RadiationBall flux). The `_flange_ys` helper forces y=−tw/2 into the flange grid so gid() creates shared T-junction nodes; this gives web↔flange heat conduction in K. See `iprofil_surface_mesher.py`. Each plate has only ONE stored normal but is physically exposed on both faces (§3.4.1) — directional sources must check both `normal` and `-normal` (`double_sided` flag in `analysis_runner.py`, fixed 2026-08-25) or they silently zero out plates facing the "wrong" way. See `heat/solver/CLAUDE.md`.
+- **Mesh Inspector node labels:** `pv.PolyData.extract_cells()` returns points sorted by ascending global point index, NOT in the quad's connectivity order. Node label positions must be looked up as `mesh.points[node_idx + beam_node_offset[eid]]` (via `MeshInspectorData.beam_node_offset`). Never use `highlighted.points` directly for label coordinates — labels will land at wrong corners.
 
 ---
 

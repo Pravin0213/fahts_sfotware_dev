@@ -71,26 +71,45 @@ USER_DEFINED: piecewise-linear interpolation of user_points
 
 ## RadiationBall (rad_ball.py)
 
-Spherical two-zone prescribed-flux source. Maps to `USERFLUX 0 set cx cy cz r1 flux1 r2 flux2`
-in the USFOS .fem file.
+Single-zone spherical prescribed-flux source: a sphere of `radius` [m] whose surface
+radiates uniformly at `flux` [W/m²] (Lambertian/diffuse emitter). No calibration curve —
+incident flux follows the exact point-to-sphere view factor:
+
+```
+d <= radius : q = flux                                (engulfed — all faces, no cos weighting)
+d >  radius : q = flux * (radius / d)**2 * cos(θ)      (exterior — classical "differential
+                                                          area to sphere" configuration factor,
+                                                          e.g. Incropera Table 13.2)
+```
+
+θ = angle between the target's outward normal and the direction from the target toward the
+ball centre. The engulfed case is not a special-cased hack — it's the d→radius limit of the
+same physics (a point fully enclosed by a uniform-exitance surface sees irradiance = that
+exitance, isotropically, regardless of its own orientation). See `rad_ball.py` module
+docstring for the full derivation. **Breaking change (2026-08-24):** replaced the old
+two-zone `r1/flux1/r2/flux2` piecewise-linear calibration law — see
+`heat/solver/CLAUDE.md` for the migration rationale.
 
 ```python
 @dataclass
 class RadiationBall(HeatSource):
     name: str
     center: np.ndarray   # (3,) global coords [m]
-    r1: float            # inner zone radius [m]
-    flux1: float         # inner zone irradiance [W/m²]
-    r2: float            # outer zone radius [m]
-    flux2: float         # outer zone irradiance [W/m²]
+    radius: float        # ball radius [m]
+    flux: float          # uniform surface exitance [W/m²]
     active: bool = True
 ```
+
+Key methods: `max_flux_at_distance(d)` (direction-agnostic upper bound, used for coarse
+element screening / `exposed_element_ids`), `incident_flux(point, normal=None)` (exact
+directional value — the one the solver uses per-quad).
 
 **Solver interaction:** flux is fully prescribed — do **not** use Stefan-Boltzmann or
 convective terms. Set `epsilon_m=0`, `h_conv=0` in the solver when processing this source.
 `temperature(t)` returns ambient 20°C (not meaningful for this source type).
 
-Benchmark config (USFOS verification):
+Benchmark config (USFOS verification, `radius=r1`/`flux=flux1` of the old calibration —
+outer-zone quantitative match against USFOS is not yet re-tuned for the new model):
 ```
-center=(343, 484, 64)m,  r1=5m / flux1=350,000 W/m²,  r2=100m / flux2=1,500 W/m²
+center=(343, 484, 64)m,  radius=5m,  flux=350,000 W/m²
 ```

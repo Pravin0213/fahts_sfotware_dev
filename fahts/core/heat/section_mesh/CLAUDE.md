@@ -52,6 +52,23 @@ to determine the outward normal direction. At y = 0, `np.sign(0) = 0` → zero n
 zero RadiationBall flux on the web. The left face at y = −tw/2 gives a well-defined
 outward normal (0, −1, 0).
 
+**Directional-source blind spot (fixed 2026-08-25):** each I-beam plate (top flange,
+web, bottom flange) is meshed with only ONE fixed local normal, but §3.4.1 says both
+faces of every plate are physically exposed (open profile, no interior cavity) — unlike
+BOX/PIPE outer walls, which genuinely have only one exposed side. For an isotropic
+FireZone this doesn't matter (`n_exposed_sides=2` doubling). For a directional source
+(RadiationBall/ConcentratedSource/LineSource) it used to zero out the whole face
+whenever the source happened to be on the side the mesh's single stored normal didn't
+point toward — e.g. a ball squarely beside a beam's web could receive **zero** flux
+depending purely on that beam's `UNITVEC` orientation, even though it was clearly
+exposed on its physical near side. Fixed in `analysis_runner.py`'s
+`_rad_ball_per_quad_flux` / `_concentrated_source_per_quad_flux` /
+`_line_source_per_quad_flux` (and the QUADSHEL block) via a `double_sided` flag
+(`isinstance(sec, ISection)` for beams, always-True for QUADSHEL): evaluate flux
+against both the stored normal and its mirror, per source, and keep whichever side
+is actually lit — never sum both (at most one is ever nonzero for a single point
+source). See `heat/solver/CLAUDE.md`.
+
 ### PipeSurfaceMesher
 ```python
 PipeSurfaceMesher(section: PipeSection, length: float,

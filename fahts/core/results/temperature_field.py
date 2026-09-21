@@ -36,6 +36,11 @@ class TemperatureField:
     element_ids: list[int]
     T_centroid: np.ndarray
     T_section: dict[int, np.ndarray] = field(default_factory=dict)
+    # {eid: (nodes_global (n_nodes, 3), quads (n_quads, 4))} in global model coords [m].
+    # Populated by the surface solver path; absent for TRISHELL fallback elements.
+    nodal_geometry: dict[int, tuple[np.ndarray, np.ndarray]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     # Reverse lookup built in __post_init__; not part of the public contract
     _eid_to_idx: dict[int, int] = field(init=False, repr=False, compare=False)
@@ -182,6 +187,8 @@ class TemperatureField:
         times: np.ndarray,
         T_history: np.ndarray,
         mesh: object,
+        *,
+        nodes_global: np.ndarray | None = None,
     ) -> "TemperatureField":
         """
         Create a single-element TemperatureField from SurfaceTransientSolver output.
@@ -190,10 +197,12 @@ class TemperatureField:
         temperatures (using BeamSurfaceMesh.node_area_weights).
 
         Args:
-            eid:       Beam element ID.
-            times:     (n_steps,) output times [s].
-            T_history: (n_steps, n_nodes) surface nodal temperatures [°C].
-            mesh:      BeamSurfaceMesh used for the analysis.
+            eid:          Beam element ID.
+            times:        (n_steps,) output times [s].
+            T_history:    (n_steps, n_nodes) surface nodal temperatures [°C].
+            mesh:         BeamSurfaceMesh used for the analysis.
+            nodes_global: (n_nodes, 3) mesh node positions in global model coords [m].
+                          When provided, populates nodal_geometry for per-vertex rendering.
 
         Returns:
             TemperatureField with a single element.
@@ -203,11 +212,16 @@ class TemperatureField:
         T_hist = np.asarray(T_history, dtype=float)
         T_cen  = T_hist @ weights                 # (n_steps,)
 
+        ng: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        if nodes_global is not None:
+            ng = {eid: (np.asarray(nodes_global, dtype=float), mesh.quads.copy())}
+
         return cls(
             times=np.asarray(times, dtype=float),
             element_ids=[eid],
             T_centroid=T_cen[:, np.newaxis],      # (n_steps, 1)
             T_section={eid: T_hist},
+            nodal_geometry=ng,
         )
 
     @classmethod
@@ -272,17 +286,20 @@ class TemperatureField:
         element_ids: list[int] = []
         T_cols: list[np.ndarray] = []
         T_section: dict[int, np.ndarray] = {}
+        nodal_geometry: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
         for f in fields:
             element_ids.extend(f.element_ids)
             T_cols.append(f.T_centroid)
             T_section.update(f.T_section)
+            nodal_geometry.update(f.nodal_geometry)
 
         return cls(
             times=times,
             element_ids=element_ids,
             T_centroid=np.hstack(T_cols),
             T_section=T_section,
+            nodal_geometry=nodal_geometry,
         )
 
     # ── Gradient computation ──────────────────────────────────────────────────
@@ -291,41 +308,103 @@ class TemperatureField:
         self,
         eid: int,
         t_idx: int,
-        mesh: SectionMesh,
+        mesh: "SectionMesh | BeamSurfaceMesh",
     ) -> tuple[float, float]:
         """
         Linearised temperature gradients (βy, βz) at time step t_idx.
 
-        Uses area-weighted first moments of Quad4 element centroid temperatures
-        over the cross-section (SINTEF FAHTS §3.4.2):
+        Implements the §3.4.2 equivalent thermal-expansion linearization:
 
             βz = Σ(T_k · y_k · A_k) / Iz,  Iz = Σ(y_k² · A_k)
             βy = Σ(T_k · z_k · A_k) / Iy,  Iy = Σ(z_k² · A_k)
 
+        Dispatches on mesh type:
+        - ``SectionMesh``: nodes are (n, 2) [y, z]; A_k is the 2-D quad area.
+        - ``BeamSurfaceMesh``: nodes are (n, 3) [x, y, z]; y_k/z_k from columns
+          1/2; A_k is the 3-D face area (axial × hoop).  Integrating over the
+          full surface with 3-D areas is equivalent to integrating ΔT·y and
+          ΔT·z over the cross-sectional area times beam length (§3.4.2 Eq. 3-32).
+
         Returns (βy [°C/m], βz [°C/m]).  Returns (0.0, 0.0) if the element
         has no section data (e.g. shell elements solved with Shell1DSolver).
         """
+        from fahts.core.heat.section_mesh.beam_surface_mesh import (
+            BeamSurfaceMesh as _BSM,
+        )
+
         if eid not in self.T_section:
             return 0.0, 0.0
 
-        T_nodes = self.T_section[eid][t_idx]          # (n_nodes,)
-        nodes = mesh.nodes                             # (n_nodes, 2): columns [y, z]
+        if isinstance(mesh, _BSM):
+            return self._section_gradient_surface(eid, t_idx, mesh)
+        return self._section_gradient_cross(eid, t_idx, mesh)
+
+    def _section_gradient_cross(
+        self,
+        eid: int,
+        t_idx: int,
+        mesh: "SectionMesh",
+    ) -> tuple[float, float]:
+        """§3.4.2 gradient for legacy SectionMesh (2-D cross-section, nodes [y, z])."""
+        T_nodes = self.T_section[eid][t_idx]   # (n_nodes,)
+        nodes = mesh.nodes                      # (n_nodes, 2): columns [y, z]
 
         sum_Ty_A = 0.0
         sum_Tz_A = 0.0
-        Iz = 0.0   # Σ(y_k² · A_k)
-        Iy = 0.0   # Σ(z_k² · A_k)
+        Iz = 0.0
+        Iy = 0.0
 
         for quad in mesh.quads:
             y = nodes[quad, 0]
             z = nodes[quad, 1]
-            # Element area — same cross-product formula as SectionMesh.steel_area
             dy1 = y[2] - y[0]; dz1 = z[2] - z[0]
             dy2 = y[3] - y[1]; dz2 = z[3] - z[1]
             A_k = 0.5 * abs(dy1 * dz2 - dy2 * dz1)
 
             y_k = float(y.mean())
             z_k = float(z.mean())
+            T_k = float(T_nodes[quad].mean())
+
+            sum_Ty_A += T_k * y_k * A_k
+            sum_Tz_A += T_k * z_k * A_k
+            Iz += y_k * y_k * A_k
+            Iy += z_k * z_k * A_k
+
+        beta_z = sum_Ty_A / Iz if Iz > 1e-20 else 0.0
+        beta_y = sum_Tz_A / Iy if Iy > 1e-20 else 0.0
+        return beta_y, beta_z
+
+    def _section_gradient_surface(
+        self,
+        eid: int,
+        t_idx: int,
+        mesh: "BeamSurfaceMesh",
+    ) -> tuple[float, float]:
+        """§3.4.2 gradient for BeamSurfaceMesh (3-D surface mesh, nodes [x, y, z]).
+
+        For the 3-D axial × hoop mesh the integral ∬Δt·y dA dx over the full
+        beam surface is equivalent to Σ(T_k·y_k·A_k) where A_k is the 3-D face
+        area and y_k/z_k are the cross-section (hoop) centroid coordinates
+        (columns 1 and 2 of the 3-D node array).  The moments of inertia are
+        computed from the same surface-area weighting.
+        """
+        T_nodes = self.T_section[eid][t_idx]   # (n_nodes,)
+        nodes = mesh.nodes                      # (n_nodes, 3): columns [x, y, z]
+
+        sum_Ty_A = 0.0
+        sum_Tz_A = 0.0
+        Iz = 0.0
+        Iy = 0.0
+
+        for quad in mesh.quads:
+            p = nodes[quad]           # (4, 3)
+            d1 = p[2] - p[0]         # diagonal 1 of quad
+            d2 = p[3] - p[1]         # diagonal 2 of quad
+            cross = np.cross(d1, d2)
+            A_k = 0.5 * float(np.linalg.norm(cross))
+
+            y_k = float(p[:, 1].mean())   # cross-section y (column 1)
+            z_k = float(p[:, 2].mean())   # cross-section z (column 2)
             T_k = float(T_nodes[quad].mean())
 
             sum_Ty_A += T_k * y_k * A_k

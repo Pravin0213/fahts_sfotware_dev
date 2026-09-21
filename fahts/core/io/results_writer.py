@@ -275,20 +275,25 @@ def export_beltemp(
     (one per element).  Values are INCREMENTAL temperature changes (matching the
     USFOS convention).
 
-    When *meshes* is supplied (mapping eid → SectionMesh) the Y/Z gradient columns
-    are computed from the linearised first-moment formula (SINTEF FAHTS §3.4.2):
+    When *meshes* is supplied the Y/Z gradient columns are computed from the
+    §3.4.2 equivalent thermal-expansion linearization (SINTEF FAHTS §3.4.2):
 
-        βz = Σ(T_k · y_k · A_k) / Iz
-        βy = Σ(T_k · z_k · A_k) / Iy
+        βz = Σ(T_k · y_k · A_k) / Iz,  Iz = Σ(y_k² · A_k)
+        βy = Σ(T_k · z_k · A_k) / Iy,  Iy = Σ(z_k² · A_k)
 
-    Elements without a corresponding mesh entry receive zero gradients.
+    The mesh may be a ``SectionMesh`` (legacy 2-D cross-section) or a
+    ``BeamSurfaceMesh`` (active 3-D axial × hoop surface mesh).  For the
+    3-D case y_k/z_k are taken from columns 1/2 of the 3-D node array and
+    A_k is the physical 3-D face area; the resulting integral is equivalent
+    to the full-beam §3.4.2 surface integral.  Elements without a
+    corresponding mesh entry receive zero gradients.
 
     Args:
         result:     TemperatureField from run_analysis().
         path:       Output file path (typically .fem).
         T_initial:  Initial temperature used to compute increments (default 20.0 °C).
         time_unit:  "s" (seconds, default) or "min" (minutes) for displayed time values.
-        meshes:     Optional dict mapping element IDs to SectionMesh objects.
+        meshes:     Optional dict mapping element IDs to SectionMesh or BeamSurfaceMesh.
                     When provided, actual βy/βz gradients are written instead of zeros.
     """
     path = Path(path)

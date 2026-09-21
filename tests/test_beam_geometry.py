@@ -92,7 +92,7 @@ class TestBuildBeamMesh:
     def test_face_count(self):
         elem, sec, nodes = _axis_beam()
         mesh = build_beam_mesh(elem, sec, nodes)
-        assert mesh.n_cells == 6  # 4 sides + 2 end caps
+        assert mesh.n_cells == 4  # 4 lateral panels, no end caps
 
     def test_point_count(self):
         elem, sec, nodes = _axis_beam()
@@ -122,7 +122,7 @@ class TestBuildBeamMesh:
             local_z=np.array([0, 0, 1.0]),
         )
         mesh = build_beam_mesh(elem, sec, nodes)
-        assert mesh.n_cells == 6
+        assert mesh.n_cells == 4
 
     def test_diagonal_beam(self):
         """Non-axis-aligned beam — frame must remain orthonormal."""
@@ -131,7 +131,7 @@ class TestBuildBeamMesh:
             local_z=np.array([0, 0, 1.0]),
         )
         mesh = build_beam_mesh(elem, sec, nodes)
-        assert mesh.n_cells == 6
+        assert mesh.n_cells == 4
 
 
 # ── mesh_section_at tests ──────────────────────────────────────────────────────
@@ -219,8 +219,8 @@ class TestBuildModelMesh:
         mesh = build_model_mesh(model)
 
         assert isinstance(mesh, pv.PolyData)
-        # 783 beams × 6 faces each
-        assert mesh.n_cells == 783 * 6
+        # 783 BOX beams × 4 lateral panels (USFOS-style, no end caps)
+        assert mesh.n_cells == 783 * 4
         assert "element_id" in mesh.cell_data
         # All element IDs in the cell data should be valid beam IDs
         ids = set(mesh.cell_data["element_id"].tolist())

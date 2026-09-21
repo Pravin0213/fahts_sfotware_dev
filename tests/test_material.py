@@ -6,9 +6,10 @@ Task 3.1 acceptance tests:
   - specific_heat(T) follows four-branch formula with 735°C peak (§3.4.1.2)
   - density(T) returns constant rho
   - Inputs below 20°C and above 1200°C are clamped
+  - MATERIAL_STANDARD constant labels the source correctly
 """
 import pytest
-from fahts.core.model.material import SteelMaterial
+from fahts.core.model.material import MATERIAL_STANDARD, SteelMaterial
 
 S355 = SteelMaterial(mid=1, E=210e9, nu=0.3, fy=355e6, rho=7850.0, alpha_T=12e-6, name="S355")
 
@@ -107,4 +108,33 @@ class TestDensity:
         assert S355.density(1200.0) == 7850.0
 
     def test_default_argument(self):
+        assert S355.density() == 7850.0
+
+
+# ── MATERIAL_STANDARD constant ────────────────────────────────────────────────
+
+class TestMaterialStandard:
+    def test_constant_is_string(self):
+        assert isinstance(MATERIAL_STANDARD, str)
+
+    def test_constant_identifies_en1993(self):
+        assert "EN1993" in MATERIAL_STANDARD or "EN 1993" in MATERIAL_STANDARD
+
+    def test_constant_references_annex_c(self):
+        assert "Annex C" in MATERIAL_STANDARD or "AnnexC" in MATERIAL_STANDARD
+
+    def test_constant_exact_value(self):
+        assert MATERIAL_STANDARD == "EN1993-1-2:2005 Annex C"
+
+    def test_conductivity_at_20C_matches_ec3(self):
+        # k = 54 - 3.33e-2 × 20 = 53.34 W/(m·K)  [EN 1993-1-2 §3.4.1.3]
+        assert abs(S355.conductivity(20.0) - 53.334) < 0.01
+
+    def test_specific_heat_at_20C_matches_ec3(self):
+        # cp = 425 + 7.73e-1×20 - 1.69e-3×400 + 2.22e-6×8000 ≈ 439.83 J/(kg·K)
+        expected = 425.0 + 7.73e-1 * 20 - 1.69e-3 * 20**2 + 2.22e-6 * 20**3
+        assert abs(S355.specific_heat(20.0) - expected) < 0.01
+
+    def test_density_matches_ec3(self):
+        # EN 1993-1-2 §3.4.1.1: ρ = 7850 kg/m³ (constant)
         assert S355.density() == 7850.0

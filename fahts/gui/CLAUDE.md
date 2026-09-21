@@ -30,6 +30,7 @@ the main window (except HeatSourcePanel which emits `sources_changed`).
 | PropertiesPanel | `properties_panel.py` | Shows selected element properties |
 | HeatSourcePanel | `heat_source_panel.py` | FireZone + RadiationBall list; emits `sources_changed` |
 | ResultsPanel | `results_panel.py` | 2-D cross-section contour + T-t graph (Matplotlib embedded) |
+| MeshInspectorPanel | `mesh_inspector_panel.py` | Quad connectivity inspector; `show_quad_info(beam_eid, quad_idx, quad_nodes, beam_quads)` |
 
 ---
 
@@ -100,3 +101,5 @@ Key methods:
 - Animation GIF: pass `duration` in ms to imageio, not `fps` (avoids deprecation warning)
 - MP4 requires `imageio-ffmpeg` — raise `ImportError` with install hint if missing
 - `_apply_visibility_filter` must reapply temperature when `_T_field` is set (post-rebuild restore)
+- `_mesh_inspector_data` is cached; invalidated when mesh config changes (set to None in `_on_mesh_preview_accepted`)
+- Inspector picking coexists with element picking — both modes active simultaneously; routing by cell data key

@@ -1,24 +1,16 @@
-"""Tests for RadiationBall (USERFLUX type 0) — two-zone spherical heat source."""
+"""Tests for RadiationBall — exact point-to-sphere flux (Lambertian sphere source)."""
 import numpy as np
 import pytest
 
 from fahts.core.heat.sources.rad_ball import RadiationBall
 
 
-def _ball(
-    center=(0.0, 0.0, 0.0),
-    r1=5.0,
-    flux1=350_000.0,
-    r2=100.0,
-    flux2=1_500.0,
-) -> RadiationBall:
+def _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0) -> RadiationBall:
     return RadiationBall(
         name="test_ball",
         center=np.array(center, dtype=float),
-        r1=r1,
-        flux1=flux1,
-        r2=r2,
-        flux2=flux2,
+        radius=radius,
+        flux=flux,
     )
 
 
@@ -33,52 +25,98 @@ class TestConstruction:
         assert b.temperature(0.0) == pytest.approx(20.0)
         assert b.temperature(9999.0) == pytest.approx(20.0)
 
-    def test_bounds_uses_r2(self):
-        b = _ball(center=(10.0, 20.0, 30.0), r1=5.0, r2=100.0)
+    def test_bounds_uses_radius(self):
+        b = _ball(center=(10.0, 20.0, 30.0), radius=5.0)
         lo, hi = b.bounds()
-        np.testing.assert_allclose(lo, [-90.0, -80.0, -70.0])
-        np.testing.assert_allclose(hi, [110.0, 120.0, 130.0])
+        np.testing.assert_allclose(lo, [5.0, 15.0, 25.0])
+        np.testing.assert_allclose(hi, [15.0, 25.0, 35.0])
 
-    def test_r1_must_be_positive(self):
-        with pytest.raises(ValueError, match="r1"):
-            _ball(r1=0.0)
+    def test_radius_must_be_positive(self):
+        with pytest.raises(ValueError, match="radius"):
+            _ball(radius=0.0)
 
-    def test_r2_must_exceed_r1(self):
-        with pytest.raises(ValueError, match="r2"):
-            _ball(r1=10.0, r2=5.0)
-
-    def test_r2_equal_r1_raises(self):
-        with pytest.raises(ValueError, match="r2"):
-            _ball(r1=5.0, r2=5.0)
+    def test_flux_must_be_positive(self):
+        with pytest.raises(ValueError, match="flux"):
+            _ball(flux=0.0)
 
 
-# ── flux_at ───────────────────────────────────────────────────────────────────
+# ── max_flux_at_distance ────────────────────────────────────────────────────
 
-class TestFluxAt:
-    def test_at_centre_returns_flux1(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(0.0) == pytest.approx(350_000.0)
+class TestMaxFluxAtDistance:
+    def test_at_surface_returns_flux(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        assert b.max_flux_at_distance(5.0) == pytest.approx(350_000.0)
 
-    def test_at_r1_boundary_returns_flux1(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(5.0) == pytest.approx(350_000.0)
+    def test_inside_radius_clamped_at_flux(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        assert b.max_flux_at_distance(2.5) == pytest.approx(350_000.0)
+        assert b.max_flux_at_distance(0.0) == pytest.approx(350_000.0)
 
-    def test_just_outside_r1_returns_flux2(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(5.001) == pytest.approx(1_500.0)
+    def test_exterior_follows_inverse_square(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        # F = (R/d)^2 exactly (sphere source theorem)
+        assert b.max_flux_at_distance(10.0) == pytest.approx(350_000.0 * (5.0 / 10.0) ** 2)
+        assert b.max_flux_at_distance(50.0) == pytest.approx(350_000.0 * (5.0 / 50.0) ** 2)
 
-    def test_at_r2_boundary_returns_flux2(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(100.0) == pytest.approx(1_500.0)
+    def test_decays_toward_zero_but_never_hits_it(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        assert b.max_flux_at_distance(1.0e6) > 0.0
+        assert b.max_flux_at_distance(1.0e6) < 1.0e-3
 
-    def test_beyond_r2_returns_zero(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(100.001) == pytest.approx(0.0)
-        assert b.flux_at(9999.0) == pytest.approx(0.0)
 
-    def test_midpoint_in_outer_zone(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        assert b.flux_at(50.0) == pytest.approx(1_500.0)
+# ── incident_flux (directional) ─────────────────────────────────────────────
+
+class TestIncidentFlux:
+    def test_engulfed_ignores_normal(self):
+        """d <= radius: flux applies uniformly regardless of face orientation."""
+        b = _ball(radius=5.0, flux=350_000.0)
+        point = np.array([2.5, 0.0, 0.0])
+        for normal in (
+            np.array([1.0, 0.0, 0.0]),
+            np.array([-1.0, 0.0, 0.0]),
+            np.array([0.0, 1.0, 0.0]),
+        ):
+            assert b.incident_flux(point, normal) == pytest.approx(350_000.0)
+
+    def test_directly_facing_receiver_gets_full_inverse_square_value(self):
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([10.0, 0.0, 0.0])
+        normal = np.array([-1.0, 0.0, 0.0])   # points back toward ball centre
+        expected = 350_000.0 * (5.0 / 10.0) ** 2
+        assert b.incident_flux(point, normal) == pytest.approx(expected)
+
+    def test_face_pointing_away_gets_zero(self):
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([10.0, 0.0, 0.0])
+        normal = np.array([1.0, 0.0, 0.0])    # points away from ball centre
+        assert b.incident_flux(point, normal) == pytest.approx(0.0)
+
+    def test_tangential_face_gets_zero(self):
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([10.0, 0.0, 0.0])
+        normal = np.array([0.0, 1.0, 0.0])    # perpendicular to line-of-sight
+        assert b.incident_flux(point, normal) == pytest.approx(0.0)
+
+    def test_oblique_face_scales_by_cosine(self):
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([10.0, 0.0, 0.0])
+        normal = np.array([-1.0, 1.0, 0.0]) / np.sqrt(2.0)  # 45 deg off
+        expected = 350_000.0 * (5.0 / 10.0) ** 2 * np.cos(np.pi / 4)
+        assert b.incident_flux(point, normal) == pytest.approx(expected)
+
+    def test_no_normal_returns_direction_agnostic_bound(self):
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([10.0, 0.0, 0.0])
+        assert b.incident_flux(point, normal=None) == pytest.approx(
+            b.max_flux_at_distance(10.0)
+        )
+
+    def test_exact_at_boundary_facing_center_gives_full_flux(self):
+        """Continuity check: at d==radius facing the centre, exterior formula == flux."""
+        b = _ball(center=(0.0, 0.0, 0.0), radius=5.0, flux=350_000.0)
+        point = np.array([5.0, 0.0, 0.0])
+        normal = np.array([-1.0, 0.0, 0.0])
+        assert b.incident_flux(point, normal) == pytest.approx(350_000.0)
 
 
 # ── exposed_element_ids ───────────────────────────────────────────────────────
@@ -101,71 +139,43 @@ class TestExposedElementIds:
         beams, nodes = self._make_beams([[0.0, 0.0, 0.0]])
         assert isinstance(b.exposed_element_ids(beams, nodes), dict)
 
-    def test_centre_element_gets_flux1(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        beams, nodes = self._make_beams([[0.0, 0.0, 0.0]])
+    def test_engulfed_element_gets_full_flux(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        beams, nodes = self._make_beams([[2.5, 0.0, 0.0]])
         result = b.exposed_element_ids(beams, nodes)
         assert 0 in result
         assert result[0] == pytest.approx(350_000.0)
 
-    def test_outer_zone_element_gets_flux2(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
+    def test_exterior_element_gets_inverse_square_flux(self):
+        b = _ball(radius=5.0, flux=350_000.0)
         beams, nodes = self._make_beams([[50.0, 0.0, 0.0]])
         result = b.exposed_element_ids(beams, nodes)
         assert 0 in result
-        assert result[0] == pytest.approx(1_500.0)
+        assert result[0] == pytest.approx(350_000.0 * (5.0 / 50.0) ** 2)
 
-    def test_element_beyond_r2_not_exposed(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        beams, nodes = self._make_beams([[200.0, 0.0, 0.0]])
-        result = b.exposed_element_ids(beams, nodes)
+    def test_far_element_excluded_by_min_flux(self):
+        b = _ball(radius=5.0, flux=350_000.0)
+        beams, nodes = self._make_beams([[100_000.0, 0.0, 0.0]])
+        result = b.exposed_element_ids(beams, nodes, min_flux=1.0)
         assert 0 not in result
 
-    def test_element_on_r1_boundary_gets_flux1(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        beams, nodes = self._make_beams([[5.0, 0.0, 0.0]])
-        result = b.exposed_element_ids(beams, nodes)
-        assert result[0] == pytest.approx(350_000.0)
-
-    def test_element_on_r2_boundary_gets_flux2(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
-        beams, nodes = self._make_beams([[100.0, 0.0, 0.0]])
-        result = b.exposed_element_ids(beams, nodes)
-        assert result[0] == pytest.approx(1_500.0)
-
-    def test_mixed_zones(self):
-        b = _ball(r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0)
+    def test_mixed_distances(self):
+        b = _ball(radius=5.0, flux=350_000.0)
         beams, nodes = self._make_beams([
-            [0.0, 0.0, 0.0],    # inner zone → eid 0
-            [50.0, 0.0, 0.0],   # outer zone → eid 1
-            [200.0, 0.0, 0.0],  # beyond r2  → eid 2 (not exposed)
+            [2.5, 0.0, 0.0],       # engulfed → eid 0
+            [50.0, 0.0, 0.0],      # exterior → eid 1
+            [1_000_000.0, 0.0, 0.0],  # negligible → eid 2 (not exposed)
         ])
         result = b.exposed_element_ids(beams, nodes)
         assert result[0] == pytest.approx(350_000.0)
-        assert result[1] == pytest.approx(1_500.0)
+        assert result[1] == pytest.approx(350_000.0 * (5.0 / 50.0) ** 2)
         assert 2 not in result
 
     def test_inactive_ball_still_exposes(self):
         """exposed_element_ids is geometry-only; caller filters active status."""
         b = RadiationBall(
-            name="off", center=np.zeros(3),
-            r1=5.0, flux1=350_000.0, r2=100.0, flux2=1_500.0,
-            active=False,
+            name="off", center=np.zeros(3), radius=5.0, flux=350_000.0, active=False,
         )
         beams, nodes = self._make_beams([[0.0, 0.0, 0.0]])
         result = b.exposed_element_ids(beams, nodes)
         assert 0 in result
-
-    def test_benchmark_params(self):
-        """Replicate USFOS benchmark: center=(343,484,64), r1=5, r2=100."""
-        b = RadiationBall(
-            name="benchmark",
-            center=np.array([343.0, 484.0, 64.0]),
-            r1=5.0,   flux1=350_000.0,
-            r2=100.0, flux2=1_500.0,
-        )
-        assert b.flux_at(0.0)   == pytest.approx(350_000.0)
-        assert b.flux_at(5.0)   == pytest.approx(350_000.0)
-        assert b.flux_at(5.01)  == pytest.approx(1_500.0)
-        assert b.flux_at(100.0) == pytest.approx(1_500.0)
-        assert b.flux_at(100.1) == pytest.approx(0.0)

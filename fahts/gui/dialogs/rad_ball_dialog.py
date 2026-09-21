@@ -1,6 +1,6 @@
 """
 RadiationBallDialog
-Qt dialog for placing / editing a two-zone RadiationBall in 3-D space.
+Qt dialog for placing / editing a RadiationBall in 3-D space.
 
 The dialog is non-modal by design — callers should use show() so the user
 can freely move it while interacting with the 3-D viewport.
@@ -34,9 +34,9 @@ from fahts.core.heat.sources.rad_ball import RadiationBall
 
 class RadiationBallDialog(QDialog):
     """
-    Non-modal dialog for creating or editing a RadiationBall (USERFLUX type 0).
+    Non-modal dialog for creating or editing a RadiationBall.
 
-    Fields: name, centre X/Y/Z, r1 [m], flux1 [W/m²], r2 [m], flux2 [W/m²].
+    Fields: name, centre X/Y/Z, radius [m], flux [W/m²].
     """
 
     ball_accepted: pyqtSignal = pyqtSignal(object)       # emits RadiationBall
@@ -68,10 +68,8 @@ class RadiationBallDialog(QDialog):
         return RadiationBall(
             name=name,
             center=np.array([cx, cy, cz], dtype=float),
-            r1=self._r1.value(),
-            flux1=self._flux1.value(),
-            r2=self._r2.value(),
-            flux2=self._flux2.value(),
+            radius=self._radius.value(),
+            flux=self._flux.value(),
             active=True,
         )
 
@@ -140,17 +138,13 @@ class RadiationBallDialog(QDialog):
         pf.addRow(pick_row)
         layout.addWidget(pos_box)
 
-        # Flux zones
-        zone_box = QGroupBox("Flux zones")
+        # Ball radius / flux
+        zone_box = QGroupBox("Radiation ball")
         zf = QFormLayout(zone_box)
-        self._r1    = self._spin(0.01, 9999.0,   5.0,      decimals=2, step=0.5)
-        self._flux1 = self._spin(0.0,  1.0e9,    350000.0, decimals=0, step=1000.0)
-        self._r2    = self._spin(0.02, 9999.0,   100.0,    decimals=2, step=1.0)
-        self._flux2 = self._spin(0.0,  1.0e9,    1500.0,   decimals=0, step=100.0)
-        zf.addRow("Inner radius r1 [m]:", self._r1)
-        zf.addRow("Inner flux  [W/m²]:", self._flux1)
-        zf.addRow("Outer radius r2 [m]:", self._r2)
-        zf.addRow("Outer flux  [W/m²]:", self._flux2)
+        self._radius = self._spin(0.01, 9999.0,   5.0,      decimals=2, step=0.5)
+        self._flux   = self._spin(0.0,  1.0e9,    350000.0, decimals=0, step=1000.0)
+        zf.addRow("Radius [m]:", self._radius)
+        zf.addRow("Surface flux  [W/m²]:", self._flux)
         layout.addWidget(zone_box)
 
         # OK / Cancel
@@ -187,7 +181,5 @@ class RadiationBallDialog(QDialog):
         self._cx.setValue(float(ball.center[0]))
         self._cy.setValue(float(ball.center[1]))
         self._cz.setValue(float(ball.center[2]))
-        self._r1.setValue(ball.r1)
-        self._flux1.setValue(ball.flux1)
-        self._r2.setValue(ball.r2)
-        self._flux2.setValue(ball.flux2)
+        self._radius.setValue(ball.radius)
+        self._flux.setValue(ball.flux)

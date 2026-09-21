@@ -5,6 +5,7 @@ Tests cover default construction, validation rules, n_output_steps, and summary.
 The Qt dialog (RunAnalysisDialog) is smoke-tested for importability only.
 """
 import pytest
+from fahts.core.model.material import MATERIAL_STANDARD
 from fahts.core.results.analysis_config import AnalysisConfig
 
 
@@ -170,6 +171,35 @@ class TestSummary:
         cfg = AnalysisConfig(t_end=3600.0, dt=30.0, output_dt=60.0, element_ids=[1, 2, 3])
         # Should mention the count or the list
         assert "3" in cfg.summary()
+
+
+# ── material_standard field ───────────────────────────────────────────────────
+
+class TestMaterialStandard:
+    def test_default_is_en1993(self):
+        cfg = AnalysisConfig(t_end=3600.0, dt=30.0, output_dt=60.0)
+        assert cfg.material_standard == "EN1993-1-2:2005 Annex C"
+
+    def test_default_matches_module_constant(self):
+        cfg = AnalysisConfig(t_end=3600.0, dt=30.0, output_dt=60.0)
+        assert cfg.material_standard == MATERIAL_STANDARD
+
+    def test_can_be_overridden(self):
+        cfg = AnalysisConfig(
+            t_end=3600.0, dt=30.0, output_dt=60.0,
+            material_standard="USFOS-thermpar",
+        )
+        assert cfg.material_standard == "USFOS-thermpar"
+
+    def test_each_instance_gets_independent_default(self):
+        a = AnalysisConfig(t_end=100.0, dt=10.0, output_dt=10.0)
+        b = AnalysisConfig(t_end=100.0, dt=10.0, output_dt=10.0)
+        a.material_standard = "custom"
+        assert b.material_standard == MATERIAL_STANDARD
+
+    def test_is_string(self):
+        cfg = AnalysisConfig(t_end=3600.0, dt=30.0, output_dt=60.0)
+        assert isinstance(cfg.material_standard, str)
 
 
 # ── Dialog importability ──────────────────────────────────────────────────────

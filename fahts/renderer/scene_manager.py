@@ -30,6 +30,7 @@ from fahts.renderer.colormap import GroupColourMap, TemperatureColourMap, UNASSI
 log = logging.getLogger(__name__)
 
 _STEEL_GREY       = UNASSIGNED_COLOUR        # (0.56, 0.57, 0.59) — re-exported alias
+_STRUCTURE_COLOUR = (1.0, 0.95, 0.0)        # yellow default for structure
 _FIRE_ORANGE      = (0.95, 0.45, 0.10)
 _BACKGROUND       = (0.15, 0.15, 0.17)      # dark charcoal (like USFOS)
 _TIME_LABEL_NAME  = "fahts_time_label"      # stable actor name for the time overlay
@@ -74,8 +75,13 @@ class SceneManager:
         # Actors — None when not currently added to the plotter
         self._solid_actor: Any = None
         self._wire_actor:  Any = None
+        self._nodal_actor: Any = None           # per-vertex temperature mesh
         self._fire_zone_actors: list[Any] = []
         self._rad_ball_actors: list[Any] = []
+        self._analysis_mesh_actor: Any = None   # FEM mesh wireframe overlay
+
+        # Pipe geometry sides — kept in sync with c_circ from the mesh config
+        self._n_pipe_sides: int = 16
 
         # Mode state
         self._render_mode: str = "section"   # 'wire' | 'section'
@@ -83,6 +89,7 @@ class SceneManager:
         self._T_colour_map: TemperatureColourMap = TemperatureColourMap()
         self._T_field: Any = None   # TemperatureField; kept so visibility changes can reapply it
         self._T_t_idx: int = 0      # time-step index last applied
+        self._nodal_mesh: Any = None  # pv.PolyData built from solver surface mesh nodes
 
         # Time label actor — text overlay showing t = X s when temperature is active
         self._time_label_actor: Any = None
@@ -93,8 +100,27 @@ class SceneManager:
         self._elem_to_group:    dict[int, str] = {}   # eid → group name
         self._group_visible:    dict[str, bool] = {}  # group name → visible flag
 
+        # Custom legend clim — when set, overrides auto-range in update_temperature
+        self._custom_clim: tuple[float, float] | None = None
+
         # Picking state
         self._pick_callback: Any = None
+        self._vtk_pick_obs_id: Any = None   # VTK LeftButtonPressEvent observer id
+        self._vtk_iren_ref: Any = None       # vtkRenderWindowInteractor ref (weak)
+
+        # Mesh inspector state
+        self._inspector_data: Any = None       # MeshInspectorData (when active, replaces solid render)
+        self._inspector_callback: Any = None   # callable(beam_eid, quad_idx)
+
+        # Highlight actor — element or inspector-quad highlight overlay
+        self._highlight_actor: Any = None
+        # True when highlight_element split _solid_mesh into rest+blue actors.
+        self._highlight_split_active: bool = False
+        # Node-index labels shown on the selected inspector quad
+        self._inspector_node_label_actor: Any = None
+
+        # USFOS-style floating element/node labels (Ctrl+click)
+        self._element_label_actors: list[Any] = []
 
         # Axis marker state (world coordinates)
         self._axis_origin_world: np.ndarray = np.zeros(3)
@@ -168,13 +194,14 @@ class SceneManager:
         self._T_colour_map.clear_clim()
         self._T_field = None
         self._T_t_idx = 0
+        self._nodal_mesh = None
         # Reset axis origin to model centroid so scene-coord origin = axis position
         self._axis_origin_world = self._centroid.copy()
         if self._axis_marker_visible:
             self._rebuild_axis_marker()
 
         log.info("Building solid mesh (%d elements)…", model.n_elements)
-        self._full_solid_mesh = build_model_mesh(model)
+        self._full_solid_mesh = build_model_mesh(model, n_pipe_sides=self._n_pipe_sides)
         self._solid_mesh = self._full_solid_mesh   # all groups visible initially
 
         log.info("Building centreline mesh…")
@@ -203,6 +230,364 @@ class SceneManager:
             return
         self._render_mode = mode
         self._refresh_actors()
+
+    def set_pipe_sides(self, n: int) -> None:
+        """
+        Rebuild pipe geometry with *n* polygon sides so the solid mesh matches
+        the circumferential mesh density chosen in the analysis config.
+
+        No-op if *n* equals the current side count or no model is loaded.
+        """
+        if n < 3:
+            raise ValueError(f"n_pipe_sides must be >= 3, got {n}")
+        if n == self._n_pipe_sides or self._model is None:
+            return
+        self._n_pipe_sides = n
+        self._full_solid_mesh = build_model_mesh(self._model, n_pipe_sides=n)
+        self._solid_mesh = self._full_solid_mesh
+        self._write_group_scalars()
+        self._apply_visibility_filter()
+
+    def show_analysis_mesh_overlay(self, mesh: "pv.PolyData | None") -> None:
+        """
+        Show or hide the FEM analysis mesh.
+
+        Replaces the structural solid with the FEM mesh rendered as solid+edges
+        so the cell boundaries are always aligned with the rendered surface.
+        Pass the PolyData from build_analysis_mesh_overlay() to activate;
+        pass None to remove and restore the structural mesh.
+        """
+        if self._analysis_mesh_actor is not None:
+            try:
+                self._pl.remove_actor(self._analysis_mesh_actor)
+            except Exception:  # noqa: BLE001
+                pass
+            self._analysis_mesh_actor = None
+            # Restore structural mesh
+            self._refresh_actors()
+
+        if mesh is not None and mesh.n_cells > 0:
+            # Remove structural solid so there's no z-fighting between two surfaces
+            self._remove_solid_actor()
+            self._analysis_mesh_actor = self._pl.add_mesh(
+                mesh,
+                color=_STRUCTURE_COLOUR,
+                show_edges=True,
+                edge_color=_BACKGROUND,
+                line_width=0.8,
+                show_scalar_bar=False,
+            )
+        self._pl.render()
+
+    # ── Mesh Inspector ────────────────────────────────────────────────────────
+
+    def show_mesh_inspector(self, data: Any, callback: Any) -> None:
+        """
+        Activate the FEM mesh inspector.
+
+        The structural mesh is replaced by the FEM surface mesh rendered as a
+        solid surface with edges, so pick-target and visual edges are the same
+        object — no misalignment.  Click any quad to fire *callback*.
+
+        Parameters
+        ----------
+        data     : MeshInspectorData from build_mesh_inspector_data().
+        callback : callable(beam_eid: int, quad_idx: int) — fired when a quad is clicked.
+        """
+        self.hide_mesh_inspector()
+        self._inspector_data = data
+        self._inspector_callback = callback
+        self._refresh_actors()   # swaps structural → FEM mesh rendering
+
+    def hide_mesh_inspector(self) -> None:
+        """Deactivate the inspector and restore structural mesh rendering."""
+        self._inspector_data = None
+        self._inspector_callback = None
+        self._remove_highlight()
+        self._refresh_actors()
+
+    # ── Highlight ─────────────────────────────────────────────────────────────
+
+    def highlight_element(self, eid: int) -> None:
+        """
+        Highlight all faces belonging to *eid* in solid blue.
+
+        The solid mesh is split into two disjoint subsets: the selected
+        element (blue) and everything else (yellow).  Because neither subset
+        is co-planar with the other, there is zero z-fighting and no edge
+        lines bleed through.  All actor add/remove calls use render=False so
+        only a single composite frame is drawn at the end — no blink.
+        """
+        self._remove_highlight()   # render=False internally
+
+        if self._inspector_data is not None and self._inspector_data.mesh.n_cells > 0:
+            target = self._inspector_data.mesh  # type: ignore[union-attr]
+            key = "inspector_beam_eid"
+            inspector_mode = True
+        elif self._solid_mesh is not None and self._solid_mesh.n_cells > 0:
+            target = self._solid_mesh
+            key = "element_id"
+            inspector_mode = False
+        else:
+            return
+
+        eid_arr = np.asarray(target.cell_data.get(key, []))
+        sel_idx = np.where(eid_arr == eid)[0]
+        if len(sel_idx) == 0:
+            return
+
+        sel_mesh = target.extract_cells(sel_idx)
+
+        if inspector_mode:
+            # Inspector mesh is already a separate object — simple overlay with
+            # render=False so the single render at the end is the only frame.
+            try:
+                fill_actor = self._pl.add_mesh(
+                    sel_mesh,
+                    color=(0.15, 0.45, 1.0),
+                    lighting=False,
+                    opacity=1.0,
+                    show_edges=False,
+                    show_scalar_bar=False,
+                    pickable=False,
+                    render=False,
+                )
+            except TypeError:   # older PyVista without render kwarg
+                fill_actor = self._pl.add_mesh(
+                    sel_mesh,
+                    color=(0.15, 0.45, 1.0),
+                    lighting=False,
+                    opacity=1.0,
+                    show_edges=False,
+                    show_scalar_bar=False,
+                    pickable=False,
+                )
+            self._highlight_actor = fill_actor
+        else:
+            # Split the solid mesh — selected element gets its own blue actor,
+            # rest goes into a separate yellow actor.  No co-planar surfaces,
+            # no polygon-offset tricks needed, no GL_LINE bleed-through.
+            rest_idx = np.where(eid_arr != eid)[0]
+            # Remove existing solid actor (render=False — no intermediate frame)
+            self._remove_solid_actor()
+            if len(rest_idx) > 0:
+                rest_mesh = target.extract_cells(rest_idx)
+                try:
+                    self._solid_actor = self._pl.add_mesh(
+                        rest_mesh, render=False, **self._solid_mesh_kwargs()
+                    )
+                except TypeError:
+                    self._solid_actor = self._pl.add_mesh(
+                        rest_mesh, **self._solid_mesh_kwargs()
+                    )
+            try:
+                blue_actor = self._pl.add_mesh(
+                    sel_mesh,
+                    color=(0.15, 0.45, 1.0),
+                    show_edges=True,
+                    edge_color=_BACKGROUND,
+                    line_width=0.8,
+                    show_scalar_bar=False,
+                    pickable=False,
+                    render=False,
+                )
+            except TypeError:
+                blue_actor = self._pl.add_mesh(
+                    sel_mesh,
+                    color=(0.15, 0.45, 1.0),
+                    show_edges=True,
+                    edge_color=_BACKGROUND,
+                    line_width=0.8,
+                    show_scalar_bar=False,
+                    pickable=False,
+                )
+            self._highlight_actor = blue_actor
+            self._highlight_split_active = True
+
+        self._pl.render()   # single composite frame
+
+    def highlight_inspector_quad(self, beam_eid: int, quad_idx: int) -> None:
+        """
+        Highlight a single FEM quad (used by the mesh inspector on click).
+
+        The quad is shown with an orange-red fill so it stands out from the
+        rest of the FEM mesh.
+        """
+        self._remove_highlight()
+        if self._inspector_data is None:
+            return
+        offset = self._inspector_data.beam_cell_offset.get(beam_eid)
+        if offset is None:
+            return
+        cell_idx = offset + quad_idx
+        if cell_idx >= self._inspector_data.mesh.n_cells:
+            return
+        highlighted = self._inspector_data.mesh.extract_cells([cell_idx])
+        fill_actor = self._pl.add_mesh(
+            highlighted,
+            color=(1.0, 0.45, 0.0),
+            opacity=1.0,
+            show_edges=True,
+            edge_color=(1.0, 1.0, 1.0),
+            line_width=1.5,
+            show_scalar_bar=False,
+            pickable=False,
+        )
+        try:
+            prop = fill_actor.GetProperty()
+            prop.PolygonOffsetOn()
+            prop.SetPolygonOffsetFactor(-2.0)
+            prop.SetPolygonOffsetUnits(-2.0)
+        except Exception:  # noqa: BLE001
+            pass
+        self._highlight_actor = fill_actor
+
+        # Render global-DOF labels at each corner of the selected quad.
+        # Use global mesh point lookup via beam_node_offset — extract_cells reorders
+        # points by ascending global index, so highlighted.points cannot be used.
+        quad_nodes = self._inspector_data.beam_quads.get(beam_eid)
+        node_offset = self._inspector_data.beam_node_offset.get(beam_eid, 0)
+        gdof_arr   = self._inspector_data.beam_node_gdof.get(beam_eid)
+        if quad_nodes is not None and quad_idx < len(quad_nodes):
+            node_indices = quad_nodes[quad_idx]   # 4 local node indices
+            pts = np.array([
+                self._inspector_data.mesh.points[int(n) + node_offset]
+                for n in node_indices
+            ])
+            if gdof_arr is not None:
+                labels = [str(int(gdof_arr[int(n)])) for n in node_indices]
+            else:
+                labels = [str(int(n)) for n in node_indices]
+            try:
+                self._inspector_node_label_actor = self._pl.add_point_labels(
+                    pts,
+                    labels,
+                    font_size=12,
+                    text_color=(1.0, 1.0, 1.0),
+                    font_family="courier",
+                    bold=True,
+                    show_points=False,
+                    always_visible=True,
+                    reset_camera=False,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._pl.render()
+
+    def _remove_highlight(self) -> None:
+        """
+        Remove highlight actor(s) without triggering an intermediate render.
+
+        When the split-highlight is active the solid actor holds the rest-mesh;
+        removing it here lets _refresh_actors (or the caller) rebuild the full
+        solid mesh cleanly without leaving a gap frame.
+        """
+        if self._highlight_actor is not None:
+            actors = (
+                self._highlight_actor
+                if isinstance(self._highlight_actor, tuple)
+                else (self._highlight_actor,)
+            )
+            for actor in actors:
+                try:
+                    self._pl.remove_actor(actor, render=False)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._highlight_actor = None
+
+        if self._highlight_split_active:
+            self._remove_solid_actor()   # removes rest-mesh (render=False)
+            self._highlight_split_active = False
+
+        if self._inspector_node_label_actor is not None:
+            try:
+                self._pl.remove_actor(self._inspector_node_label_actor, render=False)
+            except Exception:  # noqa: BLE001
+                pass
+            self._inspector_node_label_actor = None
+
+    def _clear_element_labels(self) -> None:
+        """Remove USFOS-style floating element/node labels from the scene."""
+        for actor in self._element_label_actors:
+            try:
+                self._pl.remove_actor(actor, render=False)
+            except Exception:  # noqa: BLE001
+                pass
+        self._element_label_actors.clear()
+
+    def _show_element_labels(self, eid: int, pick_center: np.ndarray) -> None:
+        """
+        Show USFOS-style floating labels for a Ctrl+click selected element.
+
+        Handles both beam elements (n1/n2 endpoints → "element end 1/2") and
+        shell elements (corner node tuple → nearest corner node).
+
+        Two labels rendered in scene space:
+          • "Element {eid}"       — near the element centroid
+          • "Node {nid}, …"       — near the nearest node to the click position
+        """
+        self._clear_element_labels()
+        if self._model is None:
+            return
+
+        # ── Beam element ──────────────────────────────────────────────────────
+        beam = self._model.elements.get(eid)
+        if beam is not None:
+            n1 = self._model.nodes.get(beam.n1)
+            n2 = self._model.nodes.get(beam.n2)
+            if n1 is None or n2 is None:
+                return
+            p1 = n1.xyz - self._centroid
+            p2 = n2.xyz - self._centroid
+            elem_center = (p1 + p2) * 0.5
+            if np.linalg.norm(pick_center - p1) <= np.linalg.norm(pick_center - p2):
+                nearest_nid, node_pos, node_label = beam.n1, p1, f"Node {beam.n1}, element end 1"
+            else:
+                nearest_nid, node_pos, node_label = beam.n2, p2, f"Node {beam.n2}, element end 2"
+
+        # ── Shell element ─────────────────────────────────────────────────────
+        else:
+            shell = self._model.shell_elements.get(eid)
+            if shell is None:
+                return
+            # Collect scene-space positions for all corner nodes
+            corner_pts: list[tuple[int, np.ndarray]] = []
+            for nid in shell.nodes:
+                node = self._model.nodes.get(nid)
+                if node is not None:
+                    corner_pts.append((nid, node.xyz - self._centroid))
+            if not corner_pts:
+                return
+            pts = np.array([p for _, p in corner_pts])
+            elem_center = pts.mean(axis=0)
+            # Nearest corner node to the pick position
+            dists = [np.linalg.norm(pick_center - p) for _, p in corner_pts]
+            nearest_nid, node_pos = corner_pts[int(np.argmin(dists))]
+            node_label = f"Node {nearest_nid}"
+
+        def _add_label(pos: np.ndarray, text: str, text_color: tuple) -> None:
+            try:
+                actor = self._pl.add_point_labels(
+                    np.array([pos]),
+                    [text],
+                    font_size=12,
+                    bold=False,
+                    italic=False,
+                    text_color=text_color,
+                    shape_color=(1.0, 1.0, 1.0),
+                    shape="rounded_rect",
+                    show_points=False,
+                    always_visible=True,
+                    reset_camera=False,
+                )
+                self._element_label_actors.append(actor)
+            except Exception:  # noqa: BLE001
+                pass
+
+        _add_label(elem_center, f"Element {eid}", (0.80, 0.08, 0.08))
+        _add_label(node_pos, node_label, (0.08, 0.35, 0.85))
+        self._pl.render()
 
     # ── Colouring ─────────────────────────────────────────────────────────────
 
@@ -304,9 +689,51 @@ class SceneManager:
         if self._colour_mode == "temperature":
             self._refresh_actors()
 
+    @property
+    def legend_clim(self) -> tuple[float, float] | None:
+        """Custom legend clim if set by the user, otherwise None (= auto)."""
+        return self._custom_clim
+
+    def set_legend_clim(self, lo: float, hi: float) -> None:
+        """
+        Lock the legend fringe range to [lo, hi] °C.
+
+        Persists across animation steps.  The scene refreshes immediately when
+        temperature data is currently displayed.
+        """
+        self._custom_clim = (float(lo), float(hi))
+        if self._colour_mode == "temperature" and self._T_field is not None:
+            if getattr(self._T_field, "nodal_geometry", {}):
+                self._T_colour_map.set_clim(*self._custom_clim)
+                self._refresh_actors()
+            else:
+                T_row = self._T_field.T_centroid[self._T_t_idx]
+                T_map = {eid: float(T_row[i]) for i, eid in enumerate(self._T_field.element_ids)}
+                self.colour_by_temperature(T_map, clim=self._custom_clim)
+
+    def reset_legend_clim(self) -> None:
+        """
+        Remove the custom clim lock and revert to auto-range derived from data.
+
+        The scene refreshes immediately when temperature data is displayed.
+        """
+        self._custom_clim = None
+        if self._colour_mode == "temperature" and self._T_field is not None:
+            T_all = np.asarray(self._T_field.T_centroid)
+            lo, hi = float(np.nanmin(T_all)), float(np.nanmax(T_all))
+            clim = (lo, hi + 1.0) if hi - lo < 1.0 else (lo, hi)
+            if getattr(self._T_field, "nodal_geometry", {}):
+                self._T_colour_map.set_clim(*clim)
+                self._refresh_actors()
+            else:
+                T_row = self._T_field.T_centroid[self._T_t_idx]
+                T_map = {eid: float(T_row[i]) for i, eid in enumerate(self._T_field.element_ids)}
+                self.colour_by_temperature(T_map, clim=clim)
+
     def reset_colour(self) -> None:
         """Return to the default uniform steel-grey colouring."""
         self._colour_mode = "default"
+        self._nodal_mesh = None
         self._refresh_actors()
 
     # ── Group visibility ──────────────────────────────────────────────────────
@@ -341,46 +768,172 @@ class SceneManager:
 
     def enable_picking(self, callback: Any) -> None:
         """
-        Enable left-click element picking on the solid beam mesh.
+        Enable Ctrl+left-click element picking on the solid beam mesh (USFOS style).
 
         Parameters
         ----------
         callback : callable(element_id: int)
             Called with the integer element ID of the clicked beam face.
-            Not called when the click misses all beams.
+            Only fires when Ctrl is held at the time of the click.
         """
         self._pick_callback = callback
-        # Disable any prior picking session before starting a new one.
+        self._deregister_vtk_pick_observer()
         try:
             self._pl.disable_picking()
         except Exception:  # noqa: BLE001
             pass
-        self._pl.enable_cell_picking(
-            callback=self._on_cell_picked,
-            through=False,
-            show=False,
-            show_message=False,
-        )
+        # Register a LeftButtonPressEvent VTK observer.  This fires before the
+        # interactor style handles the event, giving us reliable Ctrl detection
+        # via interactor.GetControlKey() rather than Qt's event queue.
+        # pyvistaqt stores the raw vtkRenderWindowInteractor at iren.interactor
+        # (confirmed from pyvistaqt source: self.iren.interactor.RemoveObservers(...)).
+        try:
+            iren = self._pl.iren.interactor  # vtkRenderWindowInteractor
+            obs_id = iren.AddObserver(
+                "LeftButtonPressEvent", self._on_vtk_left_press, 0.5
+            )
+            self._vtk_pick_obs_id = obs_id
+            self._vtk_iren_ref = iren
+        except Exception:  # noqa: BLE001 — headless / no VTK interactor
+            # Fallback: use PyVista's built-in cell picker (no Ctrl filtering)
+            self._pl.enable_cell_picking(
+                callback=self._on_cell_picked,
+                through=False,
+                show=False,
+                show_message=False,
+            )
 
     def disable_picking(self) -> None:
         """Disable element picking."""
         self._pick_callback = None
+        self._deregister_vtk_pick_observer()
         try:
             self._pl.disable_picking()
         except Exception:  # noqa: BLE001
             pass
 
+    def _deregister_vtk_pick_observer(self) -> None:
+        """Remove the LeftButtonPressEvent VTK observer if registered."""
+        if self._vtk_pick_obs_id is not None and self._vtk_iren_ref is not None:
+            try:
+                self._vtk_iren_ref.RemoveObserver(self._vtk_pick_obs_id)
+            except Exception:  # noqa: BLE001
+                pass
+        self._vtk_pick_obs_id = None
+        self._vtk_iren_ref = None
+
+    def _on_vtk_left_press(self, interactor: Any, event: str) -> None:
+        """
+        VTK LeftButtonPressEvent observer — USFOS-style Ctrl+click selection.
+
+        Ctrl+click  → pick element, highlight, show floating labels.
+        Plain click → pick inspector quad (if inspector active); otherwise ignored.
+        """
+        ctrl = bool(interactor.GetControlKey())
+        x, y = interactor.GetEventPosition()
+
+        # Import vtkCellPicker (works for both old vtk and new vtkmodules layouts)
+        try:
+            from vtkmodules.vtkRenderingCore import vtkCellPicker
+        except ImportError:
+            try:
+                from vtk import vtkCellPicker  # type: ignore[no-redef]
+            except ImportError:
+                return
+
+        picker = vtkCellPicker()
+        picker.SetTolerance(0.005)
+        picker.Pick(x, y, 0, self._pl.renderer)
+        cell_id = picker.GetCellId()
+
+        if cell_id < 0:
+            if ctrl:
+                was_split = self._highlight_split_active
+                self._clear_element_labels()
+                self._remove_highlight()   # render=False internally
+                if was_split:
+                    self._refresh_actors() # rebuilds full solid mesh + renders
+                else:
+                    self._pl.render()
+            return
+
+        # Read cell arrays from the ACTUALLY picked VTK dataset so the element
+        # id is always correct regardless of which actor was rendered last
+        # (avoids wrong-element selection when the scene contains multiple actors).
+        vtk_ds = picker.GetDataSet()
+        if vtk_ds is None:
+            return
+        cda = vtk_ds.GetCellData()
+
+        # Inspector plain click — look for inspector_beam_eid on the dataset
+        if (
+            not ctrl
+            and self._inspector_callback is not None
+            and self._inspector_data is not None
+            and self._inspector_data.mesh.n_cells > 0
+        ):
+            insp_eid_vtk = cda.GetArray("inspector_beam_eid")
+            insp_qidx_vtk = cda.GetArray("inspector_quad_idx")
+            if insp_eid_vtk is not None and insp_qidx_vtk is not None:
+                self._inspector_callback(
+                    int(insp_eid_vtk.GetValue(cell_id)),
+                    int(insp_qidx_vtk.GetValue(cell_id)),
+                )
+            return
+
+        # Element Ctrl+click — look for element_id on the dataset
+        if not ctrl or self._pick_callback is None:
+            return
+
+        eid_vtk = cda.GetArray("element_id")
+        if eid_vtk is None:
+            # Inspector mesh uses inspector_beam_eid; accept that too
+            eid_vtk = cda.GetArray("inspector_beam_eid")
+        if eid_vtk is None:
+            return  # picked a fire zone, rad ball, or other non-structural actor
+
+        eid = int(eid_vtk.GetValue(cell_id))
+        pick_pos = np.array(picker.GetPickPosition(), dtype=float)
+        self._show_element_labels(eid, pick_pos)
+        self._pick_callback(eid)
+
     def _on_cell_picked(self, picked: Any) -> None:
-        """Internal PyVista cell-picking callback — forward element_id to caller."""
-        if self._pick_callback is None or picked is None:
+        """
+        Headless fallback for PyVista's enable_cell_picking (used when the VTK
+        interactor is unavailable, e.g. in off-screen tests).
+
+        Routes to the inspector callback when an inspector quad is clicked
+        (cell data has ``inspector_beam_eid``), otherwise to the element
+        callback (cell data has ``element_id``).
+        """
+        if picked is None:
             return
         cell_data = getattr(picked, "cell_data", None)
-        if cell_data is None or "element_id" not in cell_data:
+        if cell_data is None:
             return
-        eids = cell_data["element_id"]
-        if len(eids) == 0:
+
+        # Inspector quad
+        if (
+            "inspector_beam_eid" in cell_data
+            and self._inspector_callback is not None
+        ):
+            beids = cell_data["inspector_beam_eid"]
+            qidxs = cell_data["inspector_quad_idx"]
+            if len(beids) > 0:
+                self._inspector_callback(int(beids[0]), int(qidxs[0]))
             return
-        self._pick_callback(int(eids[0]))
+
+        # Element (beam/shell) pick
+        if "element_id" in cell_data and self._pick_callback is not None:
+            eids = cell_data["element_id"]
+            if len(eids) > 0:
+                eid = int(eids[0])
+                try:
+                    pick_center = np.asarray(picked.center, dtype=float)
+                except Exception:  # noqa: BLE001
+                    pick_center = np.zeros(3)
+                self._show_element_labels(eid, pick_center)
+                self._pick_callback(eid)
 
     # ── Fire zones ────────────────────────────────────────────────────────────
 
@@ -434,15 +987,13 @@ class SceneManager:
 
     def show_rad_balls(self, balls: Sequence[Any]) -> None:
         """
-        Render each radiation ball as a semi-transparent yellow wire sphere.
+        Render each radiation ball as a semi-transparent yellow sphere, with a
+        thin wireframe overlay to make the boundary legible.
 
         Each *ball* must expose:
             .center  — (x, y, z) global centre [m]
-            .r1      — inner zone radius [m]
-            .r2      — outer zone radius [m]
+            .radius  — ball radius [m]
             .name    — str
-
-        Two concentric spheres are rendered: a solid inner (r1) and a wire outer (r2).
         """
         self.clear_rad_balls()
         for ball in balls:
@@ -451,17 +1002,17 @@ class SceneManager:
             cz = float(ball.center[2]) - self._centroid[2]
             centre = (cx, cy, cz)
 
-            # Inner sphere (r1) — solid semi-transparent
-            inner = pv.Sphere(radius=float(ball.r1), center=centre)
+            sphere = pv.Sphere(radius=float(ball.radius), center=centre)
+
+            # Solid semi-transparent surface
             a1 = self._pl.add_mesh(
-                inner, color=(1.0, 0.85, 0.0), opacity=0.20, style="surface",
+                sphere, color=(1.0, 0.85, 0.0), opacity=0.20, style="surface",
             )
             self._rad_ball_actors.append(a1)
 
-            # Outer sphere (r2) — wireframe only
-            outer = pv.Sphere(radius=float(ball.r2), center=centre)
+            # Wireframe overlay for a legible boundary
             a2 = self._pl.add_mesh(
-                outer, color=(1.0, 0.85, 0.0), opacity=0.08,
+                sphere, color=(1.0, 0.85, 0.0), opacity=0.35,
                 style="wireframe", line_width=1,
             )
             self._rad_ball_actors.append(a2)
@@ -550,10 +1101,15 @@ class SceneManager:
         """
         Snap the display to the time step in *T_field* closest to *t* [s].
 
+        When *T_field* carries nodal geometry (populated by the surface solver),
+        colours are applied per mesh vertex, showing within-element temperature
+        gradients.  Otherwise falls back to per-element centroid colouring.
+
         *T_field* duck-type (matches TemperatureField dataclass from Phase 3):
-            .times        np.ndarray  (n_steps,)
-            .element_ids  list[int]
-            .T_centroid   np.ndarray  (n_steps, n_elems)
+            .times           np.ndarray  (n_steps,)
+            .element_ids     list[int]
+            .T_centroid      np.ndarray  (n_steps, n_elems)
+            .nodal_geometry  dict        {eid: (nodes_global, quads)}  — optional
         """
         if T_field is None or self._solid_mesh is None:
             return
@@ -564,12 +1120,27 @@ class SceneManager:
         self._T_field = T_field
         self._T_t_idx = idx
 
+        if self._custom_clim is not None:
+            clim = self._custom_clim
+        else:
+            T_all = np.asarray(T_field.T_centroid)
+            lo, hi = float(np.nanmin(T_all)), float(np.nanmax(T_all))
+            clim = (lo, hi + 1.0) if hi - lo < 1.0 else (lo, hi)
+
+        ng = getattr(T_field, "nodal_geometry", {})
+        if ng:
+            nodal_mesh = self._build_nodal_pv_mesh(T_field, idx)
+            if nodal_mesh is not None:
+                self._nodal_mesh = nodal_mesh
+                self._T_colour_map.set_clim(*clim)
+                self._colour_mode = "temperature"
+                self._refresh_actors()
+                self._update_time_label(float(t))
+                return
+
+        # Centroid fallback: one uniform colour per element
         T_row = T_field.T_centroid[idx]
         T_map = {eid: float(T_row[i]) for i, eid in enumerate(T_field.element_ids)}
-
-        T_all = np.asarray(T_field.T_centroid)
-        lo, hi = float(np.nanmin(T_all)), float(np.nanmax(T_all))
-        clim = (lo, hi + 1.0) if hi - lo < 1.0 else (lo, hi)
         self.colour_by_temperature(T_map, clim=clim)
         self._update_time_label(float(t))
 
@@ -738,11 +1309,13 @@ class SceneManager:
         ):
             return self._solid_mesh_kwargs_exposed()
 
-        # default
+        # default — show edges so element boundaries are visible (USFOS style)
         return dict(
-            color=_STEEL_GREY,
+            color=_STRUCTURE_COLOUR,
             show_scalar_bar=False,
-            show_edges=False,
+            show_edges=True,
+            edge_color=_BACKGROUND,
+            line_width=0.8,
         )
 
     def _update_time_label(self, t: float | None) -> None:
@@ -787,6 +1360,54 @@ class SceneManager:
         except Exception:  # noqa: BLE001 — headless or unsupported plotter
             pass
 
+    def _build_nodal_pv_mesh(self, T_field: Any, t_idx: int) -> "pv.PolyData | None":
+        """
+        Assemble a PyVista PolyData from the solver surface mesh nodes/quads with
+        per-vertex temperatures from T_field.T_section[eid][t_idx].
+
+        Node positions are transformed from global model coords to scene coords by
+        subtracting the model centroid (same shift applied by build_model_mesh).
+        Quad faces from each element are concatenated with corrected index offsets.
+
+        Returns None if no elements have both nodal_geometry and T_section data.
+        """
+        ng: dict = getattr(T_field, "nodal_geometry", {})
+        all_pts:   list[np.ndarray] = []
+        all_faces: list[int]        = []
+        all_temps: list[np.ndarray] = []
+        offset = 0
+
+        for eid, (nodes_global, quads) in ng.items():
+            if eid not in T_field.T_section:
+                continue
+            pts = np.asarray(nodes_global, dtype=float) - self._centroid
+            T_nodes = T_field.T_section[eid][t_idx]          # (n_nodes,)
+            all_pts.append(pts)
+            all_temps.append(np.asarray(T_nodes, dtype=float))
+            for q in quads:
+                all_faces.extend([4,
+                                   int(q[0]) + offset, int(q[1]) + offset,
+                                   int(q[2]) + offset, int(q[3]) + offset])
+            offset += len(pts)
+
+        if not all_pts:
+            return None
+
+        mesh = pv.PolyData(
+            np.vstack(all_pts),
+            faces=np.array(all_faces, dtype=np.intp),
+        )
+        mesh.point_data["temperature_C"] = np.concatenate(all_temps)
+        return mesh
+
+    def _remove_nodal_actor(self) -> None:
+        if self._nodal_actor is not None:
+            try:
+                self._pl.remove_actor(self._nodal_actor, render=False)
+            except Exception:  # noqa: BLE001
+                pass
+            self._nodal_actor = None
+
     def _refresh_actors(self) -> None:
         """Remove then re-add the primary mesh actor with up-to-date settings."""
         # Clear time label whenever temperature colours are no longer active.
@@ -795,6 +1416,9 @@ class SceneManager:
 
         self._remove_solid_actor()
         self._remove_wire_actor()
+        self._remove_nodal_actor()
+        # Highlight is element/quad-specific — clear on any mesh rebuild.
+        self._remove_highlight()
 
         if self._render_mode == "wire" and self._wire_mesh is not None:
             self._wire_actor = self._pl.add_mesh(
@@ -803,8 +1427,50 @@ class SceneManager:
                 line_width=1.5,
                 show_scalar_bar=False,
             )
-        elif self._render_mode == "section" and self._solid_mesh is not None:
-            if self._solid_mesh.n_cells > 0:   # guard: don't add empty mesh
+        elif (
+            self._colour_mode == "temperature"
+            and self._nodal_mesh is not None
+            and self._nodal_mesh.n_points > 0
+            and self._T_colour_map.clim is not None
+        ):
+            # Non-analysed elements: render at full opacity with normal group colours.
+            if self._solid_mesh is not None and self._solid_mesh.n_cells > 0:
+                analysed_set = set(self._T_field.element_ids) if self._T_field is not None else set()
+                eid_arr = self._solid_mesh.cell_data.get("element_id")
+                if analysed_set and eid_arr is not None:
+                    keep = np.array([eid not in analysed_set for eid in eid_arr])
+                    unanalysed_mesh = self._solid_mesh.extract_cells(np.where(keep)[0]) if keep.any() else None
+                else:
+                    unanalysed_mesh = self._solid_mesh
+                if unanalysed_mesh is not None and unanalysed_mesh.n_cells > 0:
+                    if self._group_colour_map is not None and self._group_names:
+                        bg_kwargs = self._group_colour_map.add_mesh_kwargs()
+                    else:
+                        bg_kwargs = dict(color=_STRUCTURE_COLOUR, show_scalar_bar=False, show_edges=False)
+                    self._solid_actor = self._pl.add_mesh(unanalysed_mesh, **bg_kwargs)
+            # Analysed elements: temperature-coloured nodal mesh on top.
+            kwargs = self._T_colour_map.add_mesh_kwargs()
+            self._nodal_actor = self._pl.add_mesh(
+                self._nodal_mesh,
+                preference="point",
+                **kwargs,
+            )
+        elif self._render_mode == "section":
+            # Inspector mode: replace structural mesh with the FEM mesh so edges
+            # and pick-target are the same object — no misalignment.
+            if (
+                self._inspector_data is not None
+                and self._inspector_data.mesh.n_cells > 0
+            ):
+                self._solid_actor = self._pl.add_mesh(
+                    self._inspector_data.mesh,
+                    color=_STRUCTURE_COLOUR,
+                    show_edges=True,
+                    edge_color=_BACKGROUND,
+                    line_width=0.8,
+                    show_scalar_bar=False,
+                )
+            elif self._solid_mesh is not None and self._solid_mesh.n_cells > 0:
                 self._solid_actor = self._pl.add_mesh(
                     self._solid_mesh,
                     **self._solid_mesh_kwargs(),
@@ -815,7 +1481,7 @@ class SceneManager:
     def _remove_solid_actor(self) -> None:
         if self._solid_actor is not None:
             try:
-                self._pl.remove_actor(self._solid_actor)
+                self._pl.remove_actor(self._solid_actor, render=False)
             except Exception:  # noqa: BLE001
                 pass
             self._solid_actor = None
@@ -823,7 +1489,7 @@ class SceneManager:
     def _remove_wire_actor(self) -> None:
         if self._wire_actor is not None:
             try:
-                self._pl.remove_actor(self._wire_actor)
+                self._pl.remove_actor(self._wire_actor, render=False)
             except Exception:  # noqa: BLE001
                 pass
             self._wire_actor = None
@@ -869,6 +1535,15 @@ class SceneManager:
         # extract_cells returns a new object so the scalar arrays must be re-written.
         if self._colour_mode == "temperature":
             if self._T_field is not None:
+                ng = getattr(self._T_field, "nodal_geometry", {})
+                if ng:
+                    # Nodal path: rebuild the nodal mesh (solid mesh rebuild above
+                    # only affects the structural context overlay).
+                    nodal_mesh = self._build_nodal_pv_mesh(self._T_field, self._T_t_idx)
+                    if nodal_mesh is not None:
+                        self._nodal_mesh = nodal_mesh
+                    self._refresh_actors()
+                    return
                 T_row = self._T_field.T_centroid[self._T_t_idx]
                 T_map = {
                     eid: float(T_row[i])
@@ -878,6 +1553,7 @@ class SceneManager:
                 return  # colour_by_temperature already calls _refresh_actors
             # No stored field (direct colour_by_temperature call) — fall back
             self._colour_mode = "default"
+            self._nodal_mesh = None
             self._T_colour_map.clear_clim()
 
         self._refresh_actors()
@@ -1141,7 +1817,16 @@ class SceneManager:
     def _clear_model_actors(self) -> None:
         self._remove_solid_actor()
         self._remove_wire_actor()
+        self._remove_nodal_actor()
+        self._nodal_mesh = None
+        self._clear_element_labels()
         self._clear_axis_marker()
+        if self._analysis_mesh_actor is not None:
+            try:
+                self._pl.remove_actor(self._analysis_mesh_actor)
+            except Exception:  # noqa: BLE001
+                pass
+            self._analysis_mesh_actor = None
         self._full_solid_mesh = None
         self._solid_mesh = None
         self._wire_mesh  = None

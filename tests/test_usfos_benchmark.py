@@ -4,8 +4,15 @@ Phase 3E.8 — USFOS benchmark comparison.
 Benchmark case
 --------------
 Model  : model_t1.fem   (IHPROFIL + PIPE + BOX + ECCENT + shells)
-Source : RadiationBall  center=(343,484,64)m, r1=5m, flux1=350kW/m², r2=100m, flux2=1.5kW/m²
+Source : RadiationBall  center=(343,484,64)m, radius=5m, flux=350kW/m²
 USFOS  : usfos_verification_results/fahts_beltemp.fem  (15 min, 1-min output steps)
+
+NOTE: The reference USFOS run used the old two-zone USERFLUX calibration
+(r1=5m/flux1=350kW, r2=100m/flux2=1.5kW). FAHTS RadiationBall has since moved
+to a single-zone exact point-to-sphere model (radius, flux) — see rad_ball.py.
+This test uses radius=r1, flux=flux1; outer-zone (far-field) quantitative
+agreement with the old r2/flux2 calibration point is expected to differ and
+has not been re-tuned — flagged as a follow-up, not a regression.
 
 Known physics differences (FAHTS vs USFOS)
 -------------------------------------------
@@ -53,8 +60,7 @@ _ROOT = Path(__file__).parent.parent
 _MODEL   = _ROOT / "model_t1.fem"
 _BELTEMP = _ROOT / "usfos_verification_results" / "fahts_beltemp.fem"
 _BALL_CENTER = np.array([343.0, 484.0, 64.0])
-_R1, _FLUX1 = 5.0, 350_000.0
-_R2, _FLUX2 = 100.0, 1_500.0
+_RADIUS, _FLUX = 5.0, 350_000.0
 
 
 def _make_ball():
@@ -62,8 +68,7 @@ def _make_ball():
     return RadiationBall(
         name="usfos_benchmark",
         center=_BALL_CENTER,
-        r1=_R1, flux1=_FLUX1,
-        r2=_R2, flux2=_FLUX2,
+        radius=_RADIUS, flux=_FLUX,
     )
 
 
@@ -271,7 +276,7 @@ def _print_comparison(result, ct, sample_eids, model):
         "=" * 76,
         "FAHTS vs USFOS Benchmark Comparison",
         "Model: model_t1.fem   Source: RadiationBall center=(343,484,64)m",
-        f"       r1={_R1}m  flux1={_FLUX1/1e3:.0f} kW/m²   r2={_R2}m  flux2={_FLUX2:.0f} W/m²",
+        f"       radius={_RADIUS}m  flux={_FLUX/1e3:.0f} kW/m²",
         "=" * 76,
         "",
         "Known physics differences:",
@@ -293,7 +298,7 @@ def _print_comparison(result, ct, sample_eids, model):
         mid = e.midpoint(model.nodes)
         d = float(np.linalg.norm(mid - _BALL_CENTER))
         sec = model.sections.get(e.geom_id)
-        zone = "INNER" if d <= _R1 else "OUTER"
+        zone = "INNER" if d <= _RADIUS else "OUTER"
 
         lines.append(
             f"Element {eid:4d} | {type(sec).__name__:12s} | dist={d:6.2f}m | {zone} zone"

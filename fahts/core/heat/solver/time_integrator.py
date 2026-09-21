@@ -16,7 +16,8 @@ Crank-Nicolson incremental form (SINTEF FAHTS Eq. 3.2.30):
 Initial rate (t=0):
     Ṫ0 = M0⁻¹ · (Q0 − K0 · T0)
 
-Material properties k(T) and cp(T) are re-evaluated at mean(T_prev) each step.
+Material properties k(T) and cp(T) are re-evaluated on the current-step
+temperature iterate until the nonlinear step converges.
 K includes both conductivity and convective-BC stiffness contributions.
 """
 from __future__ import annotations
@@ -30,8 +31,30 @@ from fahts.core.model.material import SteelMaterial
 from fahts.core.heat.solver.fem_2d_section import (
     assemble_K,
     assemble_C_lumped,
+    assemble_C_consistent,
     add_robin_bc,
 )
+
+MassMatrix = np.ndarray | sp.csr_matrix
+
+
+def _mass_to_matrix(M: MassMatrix, scale: float = 1.0) -> sp.csr_matrix:
+    """Return a sparse matrix representation of vector-lumped or full mass."""
+    if sp.issparse(M):
+        return M.tocsr() * scale
+    return sp.diags(scale * M)
+
+
+def _mass_matvec(M: MassMatrix, v: np.ndarray) -> np.ndarray:
+    """Multiply vector-lumped or full mass by a vector."""
+    return M @ v if sp.issparse(M) else M * v
+
+
+def _mass_solve(M: MassMatrix, rhs: np.ndarray) -> np.ndarray:
+    """Solve M*x = rhs for vector-lumped or full mass."""
+    if sp.issparse(M):
+        return spla.spsolve(M.tocsr(), rhs)
+    return rhs / M
 
 
 class TransientSolver:
@@ -50,6 +73,10 @@ class TransientSolver:
         h_conv:    Convective coefficient [W/(m²·K)]; 25 = standard, 50 = HC fire.
         T0:        Initial uniform nodal temperature [°C] (default 20.0).
         q_prescribed_fn: Optional Callable(t) → prescribed flux [W/m²] (RadiationBall).
+        M_extra:    Optional extra diagonal capacitance [J/K per node].
+        mass_matrix: "lumped" (default) or "consistent".
+        nonlinear_max_iter: Maximum Picard iterations per time step.
+        nonlinear_tol: Relative max-norm convergence tolerance for Picard iteration.
     """
 
     def __init__(
@@ -62,7 +89,17 @@ class TransientSolver:
         T0: float = 20.0,
         q_prescribed_fn: Callable[[float], float] | None = None,
         M_extra: np.ndarray | None = None,
+        mass_matrix: str = "lumped",
+        nonlinear_max_iter: int = 6,
+        nonlinear_tol: float = 1e-6,
     ) -> None:
+        if nonlinear_max_iter < 1:
+            raise ValueError("nonlinear_max_iter must be >= 1")
+        if nonlinear_tol < 0.0:
+            raise ValueError("nonlinear_tol must be >= 0")
+        if mass_matrix not in {"lumped", "consistent"}:
+            raise ValueError("mass_matrix must be 'lumped' or 'consistent'")
+
         self._mesh = mesh
         self._mat = material
         self._fire_temp = fire_temp
@@ -75,10 +112,13 @@ class TransientSolver:
         # Extra lumped capacitance [J/K per node] for enclosed-air heat accumulation
         # in hollow sections (BOX, PIPE). Shape (n_nodes,) or None.
         self._M_extra: np.ndarray | None = M_extra
+        self._mass_matrix = mass_matrix
+        self._nonlinear_max_iter = int(nonlinear_max_iter)
+        self._nonlinear_tol = float(nonlinear_tol)
 
         # CN state — initialised lazily on first step() call or explicitly by run()
         self._K_prev: sp.csr_matrix | None = None
-        self._M_prev: np.ndarray | None = None
+        self._M_prev: MassMatrix | None = None
         self._T_dot_prev: np.ndarray | None = None
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -92,7 +132,7 @@ class TransientSolver:
 
         Returns:
             K_i: (n, n) sparse CSR — total stiffness including K_conv
-            M_i: (n,) lumped capacitance
+            M_i: (n,) lumped capacitance or (n,n) consistent capacitance matrix
             Q_i: (n,) load vector (convection + radiation + prescribed flux)
         """
         T_mean = float(np.mean(T_prev))
@@ -102,9 +142,14 @@ class TransientSolver:
         T_fire = self._fire_temp(t)
 
         K_cond = assemble_K(self._mesh, k)
-        M_i    = assemble_C_lumped(self._mesh, rho, cp)
-        if self._M_extra is not None:
-            M_i = M_i + self._M_extra
+        if self._mass_matrix == "consistent":
+            M_i: MassMatrix = assemble_C_consistent(self._mesh, rho, cp)
+            if self._M_extra is not None:
+                M_i = M_i + sp.diags(self._M_extra)
+        else:
+            M_i = assemble_C_lumped(self._mesh, rho, cp)
+            if self._M_extra is not None:
+                M_i = M_i + self._M_extra
 
         K_lil = K_cond.tolil()
         Q_i   = np.zeros(self._mesh.n_nodes)
@@ -125,11 +170,16 @@ class TransientSolver:
         """
         K0, M0, Q0 = self._assemble_step(T0, t0)
         residual = Q0 - K0 @ T0
-        # M0 is lumped (diagonal stored as 1-D array) → invert element-wise
-        T_dot0 = residual / M0
+        T_dot0 = _mass_solve(M0, residual)
         self._K_prev     = K0
         self._M_prev     = M0
         self._T_dot_prev = T_dot0
+
+    def _nonlinear_converged(self, T_new: np.ndarray, T_iter: np.ndarray) -> bool:
+        """Return True when the Picard iterate is converged in relative max norm."""
+        delta = float(np.max(np.abs(T_new - T_iter)))
+        scale = max(1.0, float(np.max(np.abs(T_new))))
+        return delta <= self._nonlinear_tol * scale
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -149,16 +199,34 @@ class TransientSolver:
         if self._K_prev is None:
             self._init_rate(T_prev, t0=0.0)
 
-        K_i, M_i, Q_i = self._assemble_step(T_prev, t)
+        assert self._K_prev is not None
+        assert self._M_prev is not None
+        assert self._T_dot_prev is not None
 
         # CN system: A · ΔT = B
         two_over_dt = 2.0 / dt
-        A = K_i + sp.diags(two_over_dt * M_i)
-        B = Q_i - self._K_prev @ T_prev + self._M_prev * self._T_dot_prev
+        T_iter = T_prev + dt * self._T_dot_prev
+        dT: np.ndarray | None = None
 
-        dT = spla.spsolve(A.tocsr(), B)
+        for _iter_i in range(self._nonlinear_max_iter):
+            K_i, M_i, Q_i = self._assemble_step(T_iter, t)
+            A = K_i + _mass_to_matrix(M_i, two_over_dt)
+            B = (
+                Q_i - self._K_prev @ T_prev
+                + _mass_matvec(self._M_prev, self._T_dot_prev)
+            )
+
+            dT = spla.spsolve(A.tocsr(), B)
+            T_new = T_prev + dT
+
+            if self._nonlinear_converged(T_new, T_iter):
+                break
+            T_iter = T_new
+
+        assert dT is not None
         T_new      = T_prev + dT
         T_dot_new  = two_over_dt * dT - self._T_dot_prev
+        K_i, M_i, _Q_i = self._assemble_step(T_new, t)
 
         # Carry state forward
         self._K_prev     = K_i

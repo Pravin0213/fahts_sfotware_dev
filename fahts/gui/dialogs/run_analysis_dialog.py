@@ -24,10 +24,15 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
+    QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -69,6 +74,23 @@ class RunAnalysisDialog(QDialog):
     # Shell / plate surface mesh defaults
     _DEFAULT_MESH_12: int = 4
     _DEFAULT_MESH_14: int = 2
+    # Material thermal property defaults (USFOS fahts.fem values)
+    _DEFAULT_EPSILON_STEEL:    float = 0.85
+    _DEFAULT_DENSITY:          float = 7850.0
+    _DEFAULT_C_REF:            float = 510.0
+    _DEFAULT_K_REF:            float = 50.0
+    _DEFAULT_ENCLOSED_GAS_RHO_C: float = 1200.0
+    # USFOS tempdepy factor tables (from fahts.fem)
+    _DEFAULT_CP_TABLE: list[tuple[float, float]] = [
+        (0, 0.792), (100, 0.943), (200, 1.018), (300, 1.094), (400, 1.131),
+        (500, 1.282), (600, 1.508), (650, 1.584), (685, 1.697), (731, 9.804),
+        (750, 2.790), (773, 1.998), (807, 1.471), (870, 1.282), (1300, 1.282),
+    ]
+    _DEFAULT_K_TABLE: list[tuple[float, float]] = [
+        (0, 1.084), (100, 1.019), (200, 0.949), (300, 0.874), (400, 0.809),
+        (500, 0.744), (600, 0.679), (700, 0.614), (800, 0.548), (900, 0.548),
+        (1000, 0.548), (1100, 0.548), (1200, 0.548), (1300, 0.548),
+    ]
 
     def __init__(
         self,
@@ -124,6 +146,10 @@ class RunAnalysisDialog(QDialog):
             mesh_12 = self._mesh_12_sb.value()
             mesh_14 = self._mesh_14_sb.value()
 
+        cp_table = self._read_factor_table(self._cp_table)
+        k_table  = self._read_factor_table(self._k_table)
+        property_model = "usfos" if (cp_table or k_table) else "en1993"
+
         return AnalysisConfig(
             t_end=t_end,
             dt=dt,
@@ -139,6 +165,14 @@ class RunAnalysisDialog(QDialog):
             n_length_p=n_length_p,
             mesh_12=mesh_12,
             mesh_14=mesh_14,
+            property_model=property_model,
+            epsilon_steel=self._epsilon_sb.value(),
+            density=self._density_sb.value(),
+            c_ref=self._c_ref_sb.value(),
+            k_ref=self._k_ref_sb.value(),
+            enclosed_gas_rho_c=self._enclosed_gas_sb.value(),
+            cp_factor_table=cp_table,
+            k_factor_table=k_table,
         )
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -378,6 +412,9 @@ class RunAnalysisDialog(QDialog):
 
         root.addWidget(mesh_grp)
 
+        # ── Material thermal properties ──────────────────────────────────────
+        root.addWidget(self._build_material_group())
+
         # ── Estimated output info ────────────────────────────────────────────
         self._est_label = QLabel()
         self._est_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -396,6 +433,139 @@ class RunAnalysisDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    # ── Material group builder ────────────────────────────────────────────────
+
+    def _build_material_group(self) -> QGroupBox:
+        grp = QGroupBox("Material Thermal Properties (steel)")
+        vbox = QVBoxLayout(grp)
+        vbox.setSpacing(6)
+
+        # scalar fields
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self._epsilon_sb = QDoubleSpinBox()
+        self._epsilon_sb.setRange(0.0, 1.0)
+        self._epsilon_sb.setDecimals(2)
+        self._epsilon_sb.setSingleStep(0.01)
+        self._epsilon_sb.setValue(self._DEFAULT_EPSILON_STEEL)
+        self._epsilon_sb.setToolTip("Steel surface emissivity ε_steel (PDF §3.2.4)")
+        form.addRow("Emissivity ε:", self._epsilon_sb)
+
+        self._density_sb = QDoubleSpinBox()
+        self._density_sb.setRange(1000.0, 20000.0)
+        self._density_sb.setDecimals(0)
+        self._density_sb.setSuffix(" kg/m³")
+        self._density_sb.setValue(self._DEFAULT_DENSITY)
+        form.addRow("Density ρ:", self._density_sb)
+
+        self._c_ref_sb = QDoubleSpinBox()
+        self._c_ref_sb.setRange(1.0, 10000.0)
+        self._c_ref_sb.setDecimals(1)
+        self._c_ref_sb.setSuffix(" J/kg·K")
+        self._c_ref_sb.setValue(self._DEFAULT_C_REF)
+        self._c_ref_sb.setToolTip("Reference specific heat c_ref (multiplied by cp(T) factor table)")
+        form.addRow("Base specific heat c:", self._c_ref_sb)
+
+        self._k_ref_sb = QDoubleSpinBox()
+        self._k_ref_sb.setRange(0.1, 500.0)
+        self._k_ref_sb.setDecimals(1)
+        self._k_ref_sb.setSuffix(" W/m·K")
+        self._k_ref_sb.setValue(self._DEFAULT_K_REF)
+        self._k_ref_sb.setToolTip("Reference conductivity k_ref (multiplied by k(T) factor table)")
+        form.addRow("Base conductivity k:", self._k_ref_sb)
+
+        self._enclosed_gas_sb = QDoubleSpinBox()
+        self._enclosed_gas_sb.setRange(0.0, 100000.0)
+        self._enclosed_gas_sb.setDecimals(0)
+        self._enclosed_gas_sb.setSuffix(" J/m³·K")
+        self._enclosed_gas_sb.setValue(self._DEFAULT_ENCLOSED_GAS_RHO_C)
+        self._enclosed_gas_sb.setToolTip(
+            "Volumetric heat capacity of enclosed gas/air inside hollow sections"
+        )
+        form.addRow("Enclosed-gas ρ·c:", self._enclosed_gas_sb)
+
+        vbox.addLayout(form)
+
+        # factor tables side by side
+        tables_hlayout = QHBoxLayout()
+        tables_hlayout.setSpacing(12)
+
+        cp_vbox = QVBoxLayout()
+        cp_vbox.addWidget(QLabel("cp(T) factor — multiplier on base c"))
+        self._cp_table = self._make_factor_table(self._DEFAULT_CP_TABLE)
+        cp_vbox.addWidget(self._cp_table)
+        cp_btns = QHBoxLayout()
+        cp_add = QPushButton("Add row")
+        cp_add.clicked.connect(lambda: self._add_table_row(self._cp_table))
+        cp_remove = QPushButton("Remove row")
+        cp_remove.clicked.connect(lambda: self._remove_table_row(self._cp_table))
+        cp_btns.addWidget(cp_add)
+        cp_btns.addWidget(cp_remove)
+        cp_vbox.addLayout(cp_btns)
+        tables_hlayout.addLayout(cp_vbox)
+
+        k_vbox = QVBoxLayout()
+        k_vbox.addWidget(QLabel("k(T) factor — multiplier on base k"))
+        self._k_table = self._make_factor_table(self._DEFAULT_K_TABLE)
+        k_vbox.addWidget(self._k_table)
+        k_btns = QHBoxLayout()
+        k_add = QPushButton("Add row")
+        k_add.clicked.connect(lambda: self._add_table_row(self._k_table))
+        k_remove = QPushButton("Remove row")
+        k_remove.clicked.connect(lambda: self._remove_table_row(self._k_table))
+        k_btns.addWidget(k_add)
+        k_btns.addWidget(k_remove)
+        k_vbox.addLayout(k_btns)
+        tables_hlayout.addLayout(k_vbox)
+
+        vbox.addLayout(tables_hlayout)
+
+        hint = QLabel(
+            "Leave a table empty for a constant-independent property.  "
+            "Temperatures must strictly increase."
+        )
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+        vbox.addWidget(hint)
+
+        return grp
+
+    def _make_factor_table(
+        self, data: list[tuple[float, float]]
+    ) -> QTableWidget:
+        tbl = QTableWidget(len(data), 2)
+        tbl.setHorizontalHeaderLabels(["T [°C]", "factor"])
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tbl.setMaximumHeight(160)
+        for row, (T, f) in enumerate(data):
+            tbl.setItem(row, 0, QTableWidgetItem(str(T)))
+            tbl.setItem(row, 1, QTableWidgetItem(str(f)))
+        return tbl
+
+    def _add_table_row(self, tbl: QTableWidget) -> None:
+        tbl.insertRow(tbl.rowCount())
+
+    def _remove_table_row(self, tbl: QTableWidget) -> None:
+        row = tbl.currentRow()
+        if row >= 0:
+            tbl.removeRow(row)
+        elif tbl.rowCount() > 0:
+            tbl.removeRow(tbl.rowCount() - 1)
+
+    def _read_factor_table(
+        self, tbl: QTableWidget
+    ) -> list[tuple[float, float]]:
+        rows: list[tuple[float, float]] = []
+        for row in range(tbl.rowCount()):
+            T_item = tbl.item(row, 0)
+            f_item = tbl.item(row, 1)
+            if T_item and f_item and T_item.text().strip() and f_item.text().strip():
+                try:
+                    rows.append((float(T_item.text()), float(f_item.text())))
+                except ValueError:
+                    pass
+        return rows
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -447,6 +617,15 @@ class RunAnalysisDialog(QDialog):
         except ValueError as exc:
             QMessageBox.critical(self, "Invalid Parameters", str(exc))
             return
+        # Warn if a table has only one row (interpolation makes no sense)
+        for label, tbl in (("cp(T)", self._cp_table), ("k(T)", self._k_table)):
+            if self._read_factor_table(tbl) and len(self._read_factor_table(tbl)) == 1:
+                QMessageBox.warning(
+                    self, "Factor Table",
+                    f"The {label} factor table has only one row — "
+                    "add more points or clear it to use a constant property.",
+                )
+                return
 
         self.config_accepted.emit(cfg)
         self.accept()

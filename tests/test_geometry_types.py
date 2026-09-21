@@ -180,12 +180,12 @@ class TestBuildPipeMesh:
         assert isinstance(mesh, pv.PolyData)
 
     def test_cell_count(self):
-        # 4 groups of n_sides quads: outer lateral + inner lateral + 2 annular end caps
+        # Outer lateral quads only (USFOS-style, no inner wall or end caps)
         n = 16
         sec = PipeSection(sid=1, outer_diameter=0.356, thickness=0.019)
         elem = _make_pipe_elem()
         mesh = build_pipe_mesh(elem, sec, _make_nodes(), n_sides=n)
-        assert mesh.n_cells == 4 * n
+        assert mesh.n_cells == n
 
     def test_element_id_in_cell_data(self):
         sec = PipeSection(sid=1, outer_diameter=0.356, thickness=0.019)
@@ -195,11 +195,11 @@ class TestBuildPipeMesh:
         assert all(mesh.cell_data["element_id"] == elem.eid)
 
     def test_mesh_has_correct_points(self):
-        # 4 rings (outer/inner × end-0/end-1) × n_sides
+        # 2 rings (outer × end-0/end-1) × n_sides (USFOS-style)
         sec = PipeSection(sid=1, outer_diameter=0.200, thickness=0.010)
         elem = _make_pipe_elem()
         mesh = build_pipe_mesh(elem, sec, _make_nodes(), n_sides=8)
-        assert mesh.n_points == 4 * 8
+        assert mesh.n_points == 2 * 8
 
     def test_different_radii(self):
         sec_large = PipeSection(sid=1, outer_diameter=0.610, thickness=0.025)
@@ -228,13 +228,13 @@ class TestBuildIsectionMesh:
         assert isinstance(mesh, pv.PolyData)
 
     def test_cell_count(self):
-        # 12 lateral + 3 end-0 + 3 end-1 = 18
+        # 5 panels: top flange (×2 halves), web, bottom flange (×2 halves)
         sec = ISection(sid=4, h=0.850, tw=0.015,
                        bf_top=0.4, tf_top=0.03,
                        bf_bot=0.4, tf_bot=0.03)
         elem = _make_isect_elem()
         mesh = build_isection_mesh(elem, sec, _make_nodes(p2=(3, 0, 0)))
-        assert mesh.n_cells == 18
+        assert mesh.n_cells == 5
 
     def test_element_id(self):
         sec = ISection(sid=4, h=0.850, tw=0.015,
@@ -250,7 +250,7 @@ class TestBuildIsectionMesh:
                        bf_bot=0.4, tf_bot=0.03)
         elem = _make_isect_elem()
         mesh = build_isection_mesh(elem, sec, _make_nodes(p2=(3, 0, 0)))
-        assert mesh.n_points == 24  # 12 corners × 2 ends
+        assert mesh.n_points == 20  # 5 panels × 4 corners
 
 
 # ── build_shell_surface_mesh ──────────────────────────────────────────────────

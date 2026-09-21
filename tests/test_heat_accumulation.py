@@ -16,9 +16,13 @@ import numpy as np
 import pytest
 
 from fahts.core.heat.section_mesh.box_mesher import BoxMesher
+from fahts.core.heat.section_mesh.box_surface_mesher import BoxSurfaceMesher
 from fahts.core.heat.section_mesh.ihprofil_mesher import IProfileMesher
+from fahts.core.heat.section_mesh.iprofil_surface_mesher import IProfileSurfaceMesher
 from fahts.core.heat.section_mesh.pipe_mesher import PipeMesher
+from fahts.core.heat.section_mesh.pipe_surface_mesher import PipeSurfaceMesher
 from fahts.core.heat.solver.analysis_runner import _compute_M_extra, run_analysis
+from fahts.core.heat.solver.surface_solver import SurfaceTransientSolver
 from fahts.core.heat.solver.time_integrator import TransientSolver
 from fahts.core.heat.sources.fire_zone import FireCurve, FireCurveType, FireZone
 from fahts.core.model.element import BeamElement
@@ -152,6 +156,29 @@ class TestComputeMExtra:
         M2 = _compute_M_extra(sec, mesh, elem_length=2.0)
         assert M2.sum() == pytest.approx(2.0 * M1.sum())
 
+    def test_box_surface_mesh_total_mass_correct(self):
+        sec = _box_sec()
+        mesh = BoxSurfaceMesher(sec, length=2.0).build()
+        M_extra = _compute_M_extra(sec, mesh, elem_length=2.0)
+        expected_total = sec.inner_height * sec.inner_width * 2.0 * 1200.0
+        assert M_extra.shape == (mesh.n_nodes,)
+        assert M_extra.sum() == pytest.approx(expected_total)
+        assert np.all(M_extra >= 0.0)
+
+    def test_pipe_surface_mesh_total_mass_correct(self):
+        sec = _pipe_sec()
+        mesh = PipeSurfaceMesher(sec, length=3.0).build()
+        M_extra = _compute_M_extra(sec, mesh, elem_length=3.0)
+        expected_total = math.pi * sec.inner_radius ** 2 * 3.0 * 1200.0
+        assert M_extra.shape == (mesh.n_nodes,)
+        assert M_extra.sum() == pytest.approx(expected_total)
+
+    def test_isection_surface_mesh_returns_none(self):
+        sec = _isec()
+        mesh = IProfileSurfaceMesher(sec, length=1.0).build()
+        result = _compute_M_extra(sec, mesh, elem_length=1.0)
+        assert result is None
+
 
 # ── TransientSolver with M_extra ─────────────────────────────────────────────
 
@@ -208,6 +235,45 @@ class TestTransientSolverMExtra:
 
         diff = abs(np.mean(T_bare[outer_ids]) - np.mean(T_acc[outer_ids]))
         assert diff < 10.0, f"Outer temperature shifted by {diff:.1f}°C — too much"
+
+
+# ── SurfaceTransientSolver with M_extra ───────────────────────────────────────
+
+class TestSurfaceTransientSolverMExtra:
+    def _run(self, M_extra=None) -> tuple[np.ndarray, object]:
+        sec = _box_sec()
+        mesh = BoxSurfaceMesher(
+            sec, length=1.0, n_top=1, n_side=1, n_length=1
+        ).build()
+        solver = SurfaceTransientSolver(
+            mesh=mesh,
+            material=_mat(),
+            fire_temp=lambda _t: 900.0,
+            epsilon_m=0.7,
+            h_conv=25.0,
+            M_extra=M_extra,
+        )
+        _, T_hist = solver.run(t_end=300.0, dt=30.0, output_dt=300.0)
+        return T_hist[-1], mesh
+
+    def test_M_extra_shape_is_validated(self):
+        sec = _box_sec()
+        mesh = BoxSurfaceMesher(sec, length=1.0).build()
+        with pytest.raises(ValueError, match="M_extra"):
+            SurfaceTransientSolver(
+                mesh=mesh,
+                material=_mat(),
+                fire_temp=lambda _t: 900.0,
+                epsilon_m=0.7,
+                h_conv=25.0,
+                M_extra=np.ones(mesh.n_nodes + 1),
+            )
+
+    def test_M_extra_slows_surface_solver_heating(self):
+        T_bare, mesh = self._run(M_extra=None)
+        M_extra = _compute_M_extra(_box_sec(), mesh, elem_length=1.0)
+        T_acc, _ = self._run(M_extra=M_extra)
+        assert float(np.mean(T_acc)) < float(np.mean(T_bare))
 
 
 # ── End-to-end: run_analysis with BOX element ─────────────────────────────────

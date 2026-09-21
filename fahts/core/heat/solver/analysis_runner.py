@@ -1,11 +1,15 @@
 """
 Analysis orchestration — FAHTS heat transfer solver.
 
-Outer loop: time steps (matching USFOS terminal output style).
-Inner loop: all exposed elements advanced in parallel at each time step.
+Outer loop: time steps (global CN advance for all elements simultaneously).
+Inner loop: per-element assembly, parallelised with threads.
 
-This produces per-time-step global temperature statistics printed in real-time,
-identical to what the USFOS FAHTS binary prints to the terminal.
+The global thermal system M·Ṫ + K·T = Q is assembled from all exposed
+structural elements into a block-diagonal sparse system (one spsolve per
+Picard iterate per time step).  Since structural elements do not share
+thermal DOFs, the system is block-diagonal and mathematically equivalent
+to N independent element solves — but provides infrastructure for future
+element coupling at structural nodes.
 
 Supports all structural element and section types using FAHTS axial × hoop
 surface-shell approach (SINTEF FAHTS §3.2.2):
@@ -16,21 +20,31 @@ surface-shell approach (SINTEF FAHTS §3.2.2):
                ShellMesher           + Shell1DSolver           (TRISHELL fallback)
 
 Supports heat sources:
-  - FireZone    — rectangular zone with fire curve (ISO 834, HC, user-defined)
-  - RadiationBall — two-zone spherical USERFLUX source (prescribed flux, no convection)
+  - FireZone          — rectangular zone with fire curve (ISO 834, HC, user-defined)
+  - RadiationBall     — spherical source, exact point-to-sphere view factor:
+                        q = flux (engulfed, d<=radius) or flux*(radius/d)^2*cos(θ) (exterior)
+  - ConcentratedSource — omnidirectional point source §3.5.4: q=E·cos(θ)/(4π·r²)
+  - LineSource        — finite line source §3.5.5: n discrete sub-sources along segment
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Callable
 
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
-from fahts.core.heat.bc.view_factor import exposed_element_ids, geometric_view_factor
+from fahts.core.heat.bc.view_factor import (
+    element_quad_exposure_flags,
+    exposed_element_ids,
+    geometric_view_factor_double_area,
+)
 from fahts.core.heat.section_mesh.beam_surface_mesh import BeamSurfaceMesh
 from fahts.core.heat.section_mesh.box_surface_mesher import BoxSurfaceMesher
 from fahts.core.heat.section_mesh.iprofil_surface_mesher import IProfileSurfaceMesher
@@ -39,7 +53,9 @@ from fahts.core.heat.section_mesh.plate_surface_mesher import PlateSurfaceMesher
 from fahts.core.heat.section_mesh.shell_mesh import ShellMesher
 from fahts.core.heat.solver.surface_solver import SurfaceTransientSolver
 from fahts.core.heat.solver.shell_1d_solver import Shell1DSolver
+from fahts.core.heat.sources.concentrated_source import ConcentratedSource
 from fahts.core.heat.sources.fire_zone import FireZone
+from fahts.core.heat.sources.line_source import LineSource
 from fahts.core.heat.sources.rad_ball import RadiationBall
 from fahts.core.model.fem_model import FEMModel
 from fahts.core.model.section import BoxSection, ISection, PipeSection, PlateSection
@@ -48,14 +64,196 @@ from fahts.core.results.temperature_field import TemperatureField
 
 log = logging.getLogger(__name__)
 
-# Minimum falloff flux [W/m²] below which an element is not considered exposed
-# by RadiationBall inverse-square falloff (§3.5.4).  Prevents solving thousands
-# of elements that receive negligible radiation at extreme distances.
-_MIN_FALLOFF_FLUX: float = 1.0
+# Minimum flux [W/m²] below which an element is not considered exposed by a
+# RadiationBall.  The exact point-to-sphere law decays smoothly to zero with
+# distance but never reaches it exactly, so this cutoff keeps the solver from
+# processing elements receiving negligible radiation far from the ball.
+_MIN_BALL_FLUX: float = 1.0
+
+# Thermal density [kg/m³] substituted for rigid "dummy" materials that declare
+# mechanical density rho=0 via MISOIEP (rigid links / connection members).
+# USFOS still heats these elements thermally using the thermpar steel density,
+# so we do the same for benchmark agreement.  See docs/3D_FEM_heat_transfer_theory.txt §16.
+_THERMAL_DENSITY_FALLBACK: float = 7850.0
+
+# Steel surface re-radiation emissivity used in USFOS benchmark mode.
+# Matches the ``emiss = 0.85`` value declared in usfos_verification_results/fahts.fem;
+# the production default re-radiation emissivity is 0.7 (see surface_solver.py).
+_USFOS_BENCHMARK_EMISSIVITY: float = 0.85
 
 
 class AnalysisCancelledError(Exception):
     """Raised by run_analysis when the cancel_check callback returns True."""
+
+
+class GlobalThermalSolver:
+    """
+    Global thermal system for all exposed structural elements with co-located node merging.
+
+    Co-located surface-mesh nodes from different elements (within 1 mm in global space)
+    are merged into shared DOFs so heat flows between connected elements.  The assembled
+    K and M are sparse matrices in global DOF space; the system is no longer block-diagonal
+    when elements share DOFs at their junctions.
+
+    Crank-Nicolson (θ=1/2) incremental form:
+        A = K_i + (2/Δt) · M_i
+        B = Q_i − K_prev · T_prev + M_prev · Ṫ_prev
+        ΔT = spsolve(A, B)
+        T_new    = T_prev + ΔT
+        Ṫ_new    = (2/Δt) · ΔT − Ṫ_prev
+    """
+
+    def __init__(
+        self,
+        eids: list[int],
+        solvers: dict,
+        gdof_map: dict[int, np.ndarray],
+        n_global_dofs: int,
+        n_workers: int = 1,
+        nonlinear_max_iter: int = 6,
+        nonlinear_tol: float = 1e-6,
+    ) -> None:
+        self._eids       = eids
+        self._solvers    = solvers
+        self._gdof_map   = gdof_map
+        self._n_total    = n_global_dofs
+        self._n_workers  = max(1, n_workers)
+        self._max_iter   = nonlinear_max_iter
+        self._tol        = nonlinear_tol
+
+        self._K_prev:     sp.csr_matrix | None = None
+        self._M_prev:     sp.csr_matrix | None = None
+        self._T_dot_prev: np.ndarray | None    = None
+
+    @staticmethod
+    def _to_sparse_K(K_e) -> sp.csr_matrix:
+        return K_e.tocsr() if sp.issparse(K_e) else sp.csr_matrix(np.asarray(K_e))
+
+    @staticmethod
+    def _to_sparse_M(M_e) -> sp.csr_matrix:
+        if sp.issparse(M_e):
+            return M_e.tocsr()
+        arr = np.asarray(M_e)
+        return sp.diags(arr, format="csr") if arr.ndim == 1 else sp.csr_matrix(arr)
+
+    def _assemble_global(
+        self, T_global: np.ndarray, t: float, pool
+    ) -> tuple[sp.csr_matrix, sp.csr_matrix, np.ndarray]:
+        """Parallel element assembly → global K, M and Q via DOF-map scatter.
+
+        Co-located nodes that share a global DOF accumulate contributions from
+        all attached elements, producing off-diagonal coupling between elements.
+        """
+        n     = self._n_total
+        Q_out = np.zeros(n)
+
+        K_gi:  list[np.ndarray] = []
+        K_gj:  list[np.ndarray] = []
+        K_val: list[np.ndarray] = []
+        M_gi:  list[np.ndarray] = []
+        M_gj:  list[np.ndarray] = []
+        M_val: list[np.ndarray] = []
+
+        def _one(eid: int):
+            gdofs = self._gdof_map[eid]
+            K_e, M_e, Q_e = self._solvers[eid]._assemble_step(T_global[gdofs], t)
+            return eid, gdofs, K_e, M_e, Q_e
+
+        futures = [pool.submit(_one, eid) for eid in self._eids]
+        for fut in futures:
+            eid, gdofs, K_e, M_e, Q_e = fut.result()
+            n_e = len(gdofs)
+            gi  = np.repeat(gdofs, n_e)
+            gj  = np.tile(gdofs, n_e)
+
+            K_arr = K_e.toarray() if sp.issparse(K_e) else np.asarray(K_e)
+            K_gi.append(gi);  K_gj.append(gj);  K_val.append(K_arr.ravel())
+
+            M_arr = np.asarray(M_e) if not sp.issparse(M_e) else None
+            if M_arr is not None and M_arr.ndim == 1:
+                # Lumped mass: only diagonal entries
+                M_gi.append(gdofs);  M_gj.append(gdofs);  M_val.append(M_arr)
+            else:
+                M_dense = M_e.toarray() if sp.issparse(M_e) else np.asarray(M_e)
+                M_gi.append(gi);  M_gj.append(gj);  M_val.append(M_dense.ravel())
+
+            np.add.at(Q_out, gdofs, Q_e)
+
+        K_global = sp.csr_matrix(
+            (np.concatenate(K_val), (np.concatenate(K_gi), np.concatenate(K_gj))),
+            shape=(n, n),
+        )
+        M_global = sp.csr_matrix(
+            (np.concatenate(M_val), (np.concatenate(M_gi), np.concatenate(M_gj))),
+            shape=(n, n),
+        )
+        return K_global, M_global, Q_out
+
+    def _init_rate(self, T_global: np.ndarray, pool) -> None:
+        """Compute initial CN rate: Ṫ0 = M0⁻¹ · (Q0 − K0 · T0)."""
+        K0, M0, Q0       = self._assemble_global(T_global, 0.0, pool)
+        self._T_dot_prev = spla.spsolve(M0, Q0 - K0 @ T_global)
+        self._K_prev     = K0
+        self._M_prev     = M0
+
+    def step(self, T_global: np.ndarray, dt: float, t: float) -> np.ndarray:
+        """
+        One Crank-Nicolson step ending at time *t*.
+
+        Returns updated global temperature vector (n_total,).
+        """
+        two_over_dt = 2.0 / dt
+
+        with ThreadPoolExecutor(max_workers=self._n_workers) as pool:
+            if self._K_prev is None:
+                self._init_rate(T_global, pool)
+
+            assert self._K_prev is not None
+            assert self._M_prev is not None
+            assert self._T_dot_prev is not None
+
+            T_iter = T_global + dt * self._T_dot_prev
+            dT: np.ndarray | None = None
+
+            for _ in range(self._max_iter):
+                K_i, M_i, Q_i = self._assemble_global(T_iter, t, pool)
+                A  = K_i + two_over_dt * M_i
+                B  = (Q_i - self._K_prev @ T_global
+                      + self._M_prev @ self._T_dot_prev)
+                dT    = spla.spsolve(A, B)
+                T_new = T_global + dT
+                # Per-element convergence check via global DOF map
+                all_conv = all(
+                    float(np.max(np.abs(T_new[gdofs] - T_iter[gdofs])))
+                    <= self._tol * max(1.0, float(np.max(np.abs(T_new[gdofs]))))
+                    for eid in self._eids
+                    for gdofs in [self._gdof_map[eid]]
+                )
+                if all_conv:
+                    break
+                T_iter = T_new
+
+            assert dT is not None
+            T_new     = T_global + dT
+            T_dot_new = two_over_dt * dT - self._T_dot_prev
+
+            K_fin, M_fin, _ = self._assemble_global(T_new, t, pool)
+
+        self._K_prev     = K_fin
+        self._M_prev     = M_fin
+        self._T_dot_prev = T_dot_new
+
+        return T_new
+
+    @property
+    def gdof_map(self) -> dict[int, np.ndarray]:
+        """Global DOF index array for each element's local nodes."""
+        return self._gdof_map
+
+    @property
+    def n_total(self) -> int:
+        """Total number of global thermal DOFs."""
+        return self._n_total
 
 
 def run_analysis(
@@ -96,17 +294,42 @@ def run_analysis(
     """
     config.validate()
 
-    active_sources = [s for s in fire_zones if s.active]
+    # ── Theory / engineering mode ─────────────────────────────────────────────
+    # In theory mode the consistent mass matrix is enforced unconditionally.
+    # We use a local variable so config is never mutated.
+    if config.analysis_mode == "theory":
+        effective_mass_matrix = "consistent"
+        log.info(
+            "Theory mode active: using consistent mass matrix "
+            "(overrides config.mass_matrix=%r).",
+            config.mass_matrix,
+        )
+    else:
+        effective_mass_matrix = config.mass_matrix
+
+    # Also accept ConcentratedSource / LineSource objects passed via config fields
+    all_sources    = (
+        list(fire_zones)
+        + list(getattr(config, "concentrated_sources", []))
+        + list(getattr(config, "line_sources", []))
+    )
+    active_sources = [s for s in all_sources if s.active]
     active_zones   = [s for s in active_sources if isinstance(s, FireZone)]
     active_balls   = [s for s in active_sources if isinstance(s, RadiationBall)]
+    active_csrcs   = [s for s in active_sources if isinstance(s, ConcentratedSource)]
+    active_lsrcs   = [s for s in active_sources if isinstance(s, LineSource)]
 
     # ── Determine exposed elements ────────────────────────────────────────────
     if config.element_ids:
         beam_eids  = [e for e in config.element_ids if e in model.elements]
         shell_eids = [e for e in config.element_ids if e in model.shell_elements]
     else:
-        beam_eids  = sorted(_exposed_beam_ids(model, active_zones, active_balls))
-        shell_eids = sorted(_exposed_shell_ids(model, active_zones, active_balls))
+        beam_eids  = sorted(
+            _exposed_beam_ids(model, active_zones, active_balls, active_csrcs, active_lsrcs)
+        )
+        shell_eids = sorted(
+            _exposed_shell_ids(model, active_zones, active_balls, active_csrcs, active_lsrcs)
+        )
 
     # ── Build beam solvers ────────────────────────────────────────────────────
     solvers:       dict[int, object]         = {}
@@ -121,8 +344,18 @@ def run_analysis(
         sec  = model.sections.get(elem.geom_id)
         mat  = model.materials.get(elem.mat_id)
         if mat is not None and mat.rho == 0.0:
-            log.debug("Element %d: rho=0 (rigid material %d) — skipped.", eid, mat.mid)
-            continue
+            # Rigid "dummy" material (MISOIEP rho=0) — USFOS still heats it using
+            # the thermpar steel density.  Substitute a thermal-density copy so the
+            # lumped mass matrix is non-singular; never mutate the shared material.
+            log.debug(
+                "Element %d: rho=0 (rigid material %d) — using thermal-density fallback.",
+                eid, mat.mid,
+            )
+            mat = dataclasses.replace(mat, rho=_THERMAL_DENSITY_FALLBACK)
+        if config.usfos_benchmark_mode and mat is not None:
+            # Benchmark comparison: use the USFOS thermpar/tempdepy thermal tables
+            # for every analysed element (never mutate the shared model material).
+            mat = dataclasses.replace(mat, usfos_mode=True)
         if not isinstance(sec, (BoxSection, ISection, PipeSection)):
             log.warning(
                 "Element %d: section type %s not supported — skipped.",
@@ -130,46 +363,112 @@ def run_analysis(
             )
             continue
         midpoint = elem.midpoint(model.nodes)
-        fire_temp, epsilon_m, h_conv, q_fn, covering_zones, ref_zone = _bc_for_element(
-            midpoint, active_zones, active_balls, config
+        extra_pts = [model.nodes[elem.n1].xyz, model.nodes[elem.n2].xyz]
+        (fire_temp, epsilon_m, h_conv, q_fn, covering_zones,
+         ref_zone, covering_ball) = _bc_for_element(
+            midpoint, active_zones, active_balls, active_csrcs, config,
+            extra_pts=extra_pts, active_lsrcs=active_lsrcs,
         )
 
-        # §3.5.4 falloff: element is beyond r2 of every active ball
-        falloff_ball: RadiationBall | None = None
         if fire_temp is None:
-            falloff_ball = _bc_falloff_ball(midpoint, active_balls)
-            if falloff_ball is None:
-                log.warning("Element %d: no active source covers midpoint — skipped.", eid)
-                continue
-            fire_temp     = lambda t: 20.0   # noqa: E731
-            epsilon_m     = 0.0
-            h_conv        = 0.0
-            q_fn          = lambda t: 0.0    # noqa: E731
-            covering_zones = []
-            ref_zone      = None
+            log.warning("Element %d: no active source covers midpoint — skipped.", eid)
+            continue
 
         mesh = _build_beam_surface_mesh(sec, elem.length, config)
+
+        # Heat-transfer-element-level per-quad exposure flags for FireZone sources.
+        # Each quad centroid is tested in global coords; quads outside get 0 flux.
+        # When all quads are exposed (None returned) behaviour is unchanged.
+        quad_exposure: np.ndarray | None = None
+        if covering_zones and active_zones:
+            flags = element_quad_exposure_flags(mesh, elem, model.nodes, active_zones)
+            if not np.any(flags > 0.0):
+                log.debug(
+                    "Element %d: zone covers endpoint/midpoint but no quad centroids — skipped.",
+                    eid,
+                )
+                continue
+            if not np.all(flags == 1.0):
+                quad_exposure = flags
 
         # §3.3.4 geometric view factors (only for FireZone sources)
         vf = eps_s = eps_f = None
         if covering_zones:
             vf    = _element_view_factors(mesh, elem, model.nodes, covering_zones)
             eps_s = 0.7
-            eps_f = ref_zone.epsilon_fire
+            eps_f = ref_zone.effective_epsilon_fire
+        elif config.usfos_benchmark_mode and covering_ball is not None:
+            # RadiationBall path (epsilon_m=0): override the solver's internal 0.7
+            # re-radiation emissivity with the USFOS reference value (fahts.fem emiss).
+            eps_s = _USFOS_BENCHMARK_EMISSIVITY
 
-        # §3.5.4 per-face directional flux for falloff elements
+        # §3.4.1: I/H profiles are open sections — every meshed plate (top flange,
+        # web, bottom flange) is physically exposed on BOTH sides (no interior
+        # cavity to shield either face), unlike BOX/PIPE outer walls which have a
+        # genuine single exposed face.  Directional sources must therefore check
+        # both the mesh's stored normal AND its mirror image and use whichever
+        # side actually faces the source — see the `double_sided` handling in
+        # _rad_ball_per_quad_flux / _concentrated_source_per_quad_flux /
+        # _line_source_per_quad_flux below.
+        double_sided = isinstance(sec, ISection)
+
+        # RadiationBall: exact point-to-sphere flux per quad (engulfed or
+        # exterior cos(θ)/(d/R)² regime — see _rad_ball_per_quad_flux).
         q_per_quad: np.ndarray | None = None
-        if falloff_ball is not None:
-            q_per_quad = _rad_ball_per_quad_flux(falloff_ball, mesh, elem, model.nodes)
+        if covering_ball is not None:
+            q_per_quad = _rad_ball_per_quad_flux(
+                covering_ball, mesh, elem, model.nodes, double_sided=double_sided
+            )
             if np.all(q_per_quad == 0.0):
-                log.debug("Element %d: falloff flux zero for all faces — skipped.", eid)
+                log.debug("Element %d: ball flux zero for all faces — skipped.", eid)
                 continue
 
+        # §3.5.4 ConcentratedSource per-face directional flux: q=E·cos(θ)/(4π·r²)
+        # Added when no RadiationBall is actively prescribing uniform flux for this element.
+        # (RadiationBall uses a uniform prescribed q_fn; the concentrated source's per-quad
+        # cos(θ) contribution would be double-counting in that case.)
+        # FireZone + ConcentratedSource can coexist: the CS flux is added via q_per_quad.
+        csrc_ball_active = covering_ball is not None
+        if active_csrcs and not csrc_ball_active:
+            q_csrc = _concentrated_source_per_quad_flux(
+                active_csrcs, mesh, elem, model.nodes, double_sided=double_sided
+            )
+            if np.any(q_csrc > 0.0):
+                q_per_quad = q_csrc if q_per_quad is None else q_per_quad + q_csrc
+            elif q_per_quad is None and not covering_zones:
+                # No face receives flux and no other heat source — element not exposed
+                log.debug(
+                    "Element %d: concentrated source flux zero for all faces — skipped.", eid
+                )
+                continue
+
+        # §3.5.5 LineSource per-face directional flux: n sub-sources summed as §3.5.4.
+        # Coexists with FireZone and ConcentratedSource; skipped when RadiationBall
+        # prescribes uniform flux (same double-counting guard as ConcentratedSource).
+        if active_lsrcs and not csrc_ball_active:
+            q_lsrc = _line_source_per_quad_flux(
+                active_lsrcs, mesh, elem, model.nodes, double_sided=double_sided
+            )
+            if np.any(q_lsrc > 0.0):
+                q_per_quad = q_lsrc if q_per_quad is None else q_per_quad + q_lsrc
+            elif q_per_quad is None and not covering_zones:
+                log.debug(
+                    "Element %d: line source flux zero for all faces — skipped.", eid
+                )
+                continue
+
+        M_extra = _compute_M_extra(sec, mesh, elem.length)
         solvers[eid]       = SurfaceTransientSolver(
             mesh=mesh, material=mat, fire_temp=fire_temp,
             epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
             epsilon_steel=eps_s, epsilon_fire=eps_f, view_factors=vf,
-            q_per_quad=q_per_quad,
+            q_per_quad=q_per_quad, quad_exposure=quad_exposure,
+            M_extra=M_extra, mass_matrix=effective_mass_matrix,
+            insulation=config.insulation,
+            prescribed_node_bcs=config.prescribed_node_bcs or None,
+            # §3.4.1: I/H profiles are open sections — both faces of every plate
+            # are fire-exposed ("2 outsides").  BOX/PIPE have 1 outside (default).
+            n_exposed_sides=2 if isinstance(sec, ISection) else 1,
         )
         meshes[eid]        = mesh
         T_states[eid]      = np.full(mesh.n_nodes, 20.0)
@@ -186,16 +485,30 @@ def run_analysis(
             log.warning("Shell %d: section not PlateSection — skipped.", eid)
             continue
         mat      = model.materials[shell.mat_id]
+        if mat is not None and mat.rho == 0.0:
+            # Rigid "dummy" material (MISOIEP rho=0) — substitute thermal density
+            # so the lumped mass matrix is non-singular (see beam loop above).
+            log.debug(
+                "Shell %d: rho=0 (rigid material %d) — using thermal-density fallback.",
+                eid, mat.mid,
+            )
+            mat = dataclasses.replace(mat, rho=_THERMAL_DENSITY_FALLBACK)
+        if config.usfos_benchmark_mode and mat is not None:
+            # Benchmark comparison: use the USFOS thermpar/tempdepy thermal tables
+            # for every analysed element (never mutate the shared model material).
+            mat = dataclasses.replace(mat, usfos_mode=True)
         midpoint = np.mean([model.nodes[nid].xyz for nid in shell.nodes], axis=0)
-        fire_temp, epsilon_m, h_conv, q_fn, _czones, _rzone = _bc_for_element(
-            midpoint, active_zones, active_balls, config
+        (fire_temp, epsilon_m, h_conv, q_fn, _czones,
+         _rzone, shell_covering_ball) = _bc_for_element(
+            midpoint, active_zones, active_balls, active_csrcs, config,
+            active_lsrcs=active_lsrcs,
         )
 
-        # §3.5.4 falloff for shells beyond r2
-        shell_falloff_ball: RadiationBall | None = None
+        # §3.5.5 ConcentratedSource/LineSource coverage when no zone/ball covers midpoint
+        shell_has_csrc = bool(active_csrcs)
+        shell_has_lsrc = bool(active_lsrcs)
         if fire_temp is None:
-            shell_falloff_ball = _bc_falloff_ball(midpoint, active_balls)
-            if shell_falloff_ball is None:
+            if not shell_has_csrc and not shell_has_lsrc:
                 log.warning("Shell %d: no active source covers midpoint — skipped.", eid)
                 continue
             fire_temp  = lambda t: 20.0   # noqa: E731
@@ -209,39 +522,90 @@ def run_analysis(
                 section=sec, corners=corners,
                 mesh_12=config.mesh_12, mesh_14=config.mesh_14,
             ).build()
-            # Per-quad directional falloff flux for QUADSHEL
+            # Per-quad directional flux for QUADSHEL (RadiationBall)
             q_per_quad_sh: np.ndarray | None = None
-            if shell_falloff_ball is not None:
-                dist     = float(np.linalg.norm(midpoint - shell_falloff_ball.center))
-                r_hat    = (midpoint - shell_falloff_ball.center) / dist
-                # Shell normal from corner geometry
-                c        = corners
-                sn       = np.cross(c[1] - c[0], c[3] - c[0])
-                sn_norm  = np.linalg.norm(sn)
-                sn       = sn / sn_norm if sn_norm > 1e-9 else sn
-                cos_th   = float(np.dot(sn, -r_hat))
-                base_q   = shell_falloff_ball.flux2 * (shell_falloff_ball.r2 / dist) ** 2
-                # Uniform value across all quads (shell is flat)
-                q_val    = base_q * max(0.0, cos_th)
+            # Shell normal from corner geometry (uniform across flat plate)
+            c    = corners
+            sn   = np.cross(c[1] - c[0], c[3] - c[0])
+            sn_n = np.linalg.norm(sn)
+            sn   = sn / sn_n if sn_n > 1e-9 else sn
+            # §3.4.1: QUADSHEL is exposed on both faces (like I/H profile plates —
+            # see the `double_sided` note on _rad_ball_per_quad_flux).  `sn` is only
+            # ONE of the two possible flat-plate normals, so directional sources must
+            # check both `sn` and `-sn` and keep whichever side is actually lit.
+            if shell_covering_ball is not None:
+                # Uniform value across all quads (shell is flat): engulfed (d<=radius)
+                # gets flux flat, exterior gets flux*(radius/d)^2*cos(θ) — whichever
+                # face (sn or -sn) actually faces the ball.
+                q_val = max(
+                    shell_covering_ball.incident_flux(midpoint, sn),
+                    shell_covering_ball.incident_flux(midpoint, -sn),
+                )
                 if q_val == 0.0:
-                    log.debug("Shell %d: falloff flux zero (facing away) — skipped.", eid)
+                    log.debug("Shell %d: ball flux zero (facing away) — skipped.", eid)
                     continue
                 q_per_quad_sh = np.full(mesh.n_quads, q_val)
+            # §3.5.4 ConcentratedSource per-quad flux for QUADSHEL
+            if active_csrcs or active_lsrcs:
+                # Quad centroids: mean of 4 corner positions per quad
+                quad_centroids = np.array([
+                    mesh.nodes[mesh.quads[q]].mean(axis=0)
+                    for q in range(mesh.n_quads)
+                ])
+                # All quads share the same flat-plate normal
+                quad_normals = np.tile(sn, (mesh.n_quads, 1))
+                if active_csrcs:
+                    q_csrc_sh = np.zeros(mesh.n_quads)
+                    for csrc in active_csrcs:
+                        q_pos = csrc.per_quad_flux(quad_centroids, quad_normals)
+                        q_neg = csrc.per_quad_flux(quad_centroids, -quad_normals)
+                        q_csrc_sh += np.maximum(q_pos, q_neg)
+                    if np.any(q_csrc_sh > 0.0):
+                        q_per_quad_sh = (
+                            q_csrc_sh if q_per_quad_sh is None
+                            else q_per_quad_sh + q_csrc_sh
+                        )
+                # §3.5.5 LineSource per-quad flux for QUADSHEL
+                if active_lsrcs:
+                    q_lsrc_sh = np.zeros(mesh.n_quads)
+                    for lsrc in active_lsrcs:
+                        q_pos = lsrc.per_quad_flux(quad_centroids, quad_normals)
+                        q_neg = lsrc.per_quad_flux(quad_centroids, -quad_normals)
+                        q_lsrc_sh += np.maximum(q_pos, q_neg)
+                    if np.any(q_lsrc_sh > 0.0):
+                        q_per_quad_sh = (
+                            q_lsrc_sh if q_per_quad_sh is None
+                            else q_per_quad_sh + q_lsrc_sh
+                        )
+            # RadiationBall re-radiation emissivity override for benchmark mode.
+            eps_s_sh = (
+                _USFOS_BENCHMARK_EMISSIVITY
+                if config.usfos_benchmark_mode and shell_covering_ball is not None
+                else None
+            )
             solver  = SurfaceTransientSolver(
                 mesh=mesh, material=mat, fire_temp=fire_temp,
                 epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
-                q_per_quad=q_per_quad_sh,
+                q_per_quad=q_per_quad_sh, epsilon_steel=eps_s_sh,
+                mass_matrix=effective_mass_matrix,
+                # §3.4.1 — both outsides exposed; skip doubling for directional per-quad flux
+                n_exposed_sides=1 if q_per_quad_sh is not None else 2,
+                insulation=config.insulation,
+                prescribed_node_bcs=config.prescribed_node_bcs or None,
             )
             is_surf = True
             stype   = "QUADSHEL"
         else:
-            if shell_falloff_ball is not None:
-                log.debug("Shell %d: TRISHELL falloff not supported — skipped.", eid)
+            if shell_covering_ball is not None:
+                log.debug("Shell %d: TRISHELL RadiationBall not supported — skipped.", eid)
                 continue
             mesh    = ShellMesher(sec, n_layers=config.n_layers).build()
             solver  = Shell1DSolver(
                 mesh=mesh, material=mat, fire_temp=fire_temp,
                 epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
+                # §3.4.1 — both outsides exposed; inner face sees same fire as outer
+                fire_temp_inner=fire_temp,
+                mass_matrix=effective_mass_matrix,
             )
             is_surf = False
             stype   = "TRISHELL"
@@ -266,55 +630,67 @@ def run_analysis(
 
     if log_cb is not None:
         _log_header(log_cb, model, config, len(valid_beam_eids), len(valid_shell_eids),
-                    total, active_zones, active_balls)
+                    total, active_zones, active_balls, active_csrcs, active_lsrcs)
 
     # ── Output storage ────────────────────────────────────────────────────────
     out_times: list[float]                   = [0.0]
     out_T:     dict[int, list[np.ndarray]]   = {eid: [T_states[eid].copy()] for eid in all_eids}
 
+    # ── Build global DOF map (co-located node merging at 1 mm tolerance) ─────
+    n_workers = min(total, os.cpu_count() or 4) if total > 1 else 1
+    _gpos     = _compute_global_node_positions(all_eids, meshes, model, is_surface)
+    gdof_map, n_global = _build_global_dof_map(all_eids, meshes, _gpos, tol=1e-3, model=model)
+    n_raw    = sum(meshes[eid].n_nodes for eid in all_eids)
+    n_merged = n_raw - n_global
+    if n_merged > 0:
+        log.info(
+            "Node merging: %d co-located nodes merged → %d global DOFs (was %d).",
+            n_merged, n_global, n_raw,
+        )
+    global_solver = GlobalThermalSolver(
+        eids=all_eids,
+        solvers=solvers,
+        gdof_map=gdof_map,
+        n_global_dofs=n_global,
+        n_workers=n_workers,
+    )
+    T_global = np.full(n_global, 20.0)
+
     # ── Time-step outer loop ──────────────────────────────────────────────────
     t        = 0.0
     step_log = 0
 
-    # Use threads to advance independent elements in parallel.
-    # NumPy/SciPy release the GIL during BLAS/LAPACK calls so threads give
-    # real CPU overlap even in CPython.  A single worker avoids thread
-    # overhead for trivially small models.
-    n_workers = min(total, os.cpu_count() or 4) if total > 1 else 1
+    for step_i in range(n_steps):
+        dt_step = min(config.dt, config.t_end - t)
+        if dt_step <= 0.0:
+            break
+        t += dt_step
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        for step_i in range(n_steps):
-            dt_step = min(config.dt, config.t_end - t)
-            if dt_step <= 0.0:
-                break
-            t += dt_step
+        if cancel_check is not None and cancel_check():
+            raise AnalysisCancelledError(f"Analysis cancelled at t={t:.2f} s.")
 
-            if cancel_check is not None and cancel_check():
-                raise AnalysisCancelledError(f"Analysis cancelled at t={t:.2f} s.")
+        # One global CN step — coupled sparse system, parallel element assembly
+        T_global = global_solver.step(T_global, dt_step, t)
 
-            # Advance all elements in parallel — each solver is independent
-            futures = {
-                executor.submit(solvers[eid].step, T_states[eid], dt_step, t): eid
-                for eid in all_eids
-            }
-            for fut in as_completed(futures):
-                T_states[futures[fut]] = fut.result()
+        # Scatter global vector back to per-element views for logging / output
+        for eid in all_eids:
+            T_states[eid] = T_global[global_solver.gdof_map[eid]]
 
-            # Emit one USFOS-style step row at every internal step
-            step_log += 1
-            if log_cb is not None:
-                T_max_now = max(float(np.max(T_states[eid])) for eid in all_eids)
-                T_min_now = min(float(np.min(T_states[eid])) for eid in all_eids)
-                _log_step_row(log_cb, step_log, t / 60.0, T_max_now, T_min_now)
+        # Emit one USFOS-style step row at every internal step
+        step_log += 1
+        if log_cb is not None:
+            T_max_now = max(float(np.max(T_states[eid])) for eid in all_eids)
+            T_min_now = min(float(np.min(T_states[eid])) for eid in all_eids)
+            _log_step_row(log_cb, step_log, t / 60.0, T_max_now, T_min_now)
 
-            # Store output at intervals
-            if (step_i + 1) % out_every == 0 or step_i == n_steps - 1:
-                out_times.append(t)
-                for eid in all_eids:
-                    out_T[eid].append(T_states[eid].copy())
+        # Store output at intervals
+        if (step_i + 1) % out_every == 0 or step_i == n_steps - 1:
+            out_times.append(t)
+            for eid in all_eids:
+                out_T[eid].append(T_states[eid].copy())
 
-            if progress_cb is not None:
-                progress_cb(step_i + 1, n_steps, -1)
+        if progress_cb is not None:
+            progress_cb(step_i + 1, n_steps, -1)
 
     if progress_cb is not None:
         progress_cb(n_steps, n_steps, -1)
@@ -328,8 +704,16 @@ def run_analysis(
 
     for eid in valid_beam_eids:
         T_hist = np.array(out_T[eid])
+        elem   = model.elements[eid]
+        R_beam = _beam_local_to_global(elem)
+        origin = model.nodes[elem.n1].xyz
+        if elem.ecc1 is not None:
+            origin = origin + np.asarray(elem.ecc1, dtype=float)
+        mesh_e = meshes[eid]
+        nodes_global = origin + (R_beam @ mesh_e.nodes.T).T   # beam-local → global
         tf     = TemperatureField.from_surface_solver_run(
-            eid=eid, times=times_arr, T_history=T_hist, mesh=meshes[eid]
+            eid=eid, times=times_arr, T_history=T_hist, mesh=mesh_e,
+            nodes_global=nodes_global,
         )
         fields.append(tf)
         t_peak = tf.peak_centroid_temperature(eid)
@@ -341,8 +725,10 @@ def run_analysis(
         T_hist = np.array(out_T[eid])
         mesh   = meshes[eid]
         if is_surface[eid]:
+            # PlateSurfaceMesher nodes are built from global corner coords → already global
             tf = TemperatureField.from_surface_solver_run(
-                eid=eid, times=times_arr, T_history=T_hist, mesh=mesh
+                eid=eid, times=times_arr, T_history=T_hist, mesh=mesh,
+                nodes_global=mesh.nodes.copy(),
             )
         else:
             tf = TemperatureField.from_shell_solver_run(
@@ -370,20 +756,41 @@ def run_analysis(
 
 # ── Exposure helpers ──────────────────────────────────────────────────────────
 
-def _exposed_beam_ids(model, active_zones, active_balls) -> set[int]:
+def _exposed_beam_ids(
+    model,
+    active_zones,
+    active_balls,
+    active_csrcs: list[ConcentratedSource] | None = None,
+    active_lsrcs: list[LineSource] | None = None,
+) -> set[int]:
     result: set[int] = set()
     if active_zones:
         result |= exposed_element_ids(model.elements, active_zones, model.nodes)
     for ball in active_balls:
-        result |= ball.exposed_element_ids(model.elements, model.nodes).keys()
-        # §3.5.4 falloff: elements beyond r2 with flux > _MIN_FALLOFF_FLUX
-        result |= ball.falloff_element_ids(
-            model.elements, model.nodes, min_flux=_MIN_FALLOFF_FLUX
-        )
+        result |= ball.exposed_element_ids(
+            model.elements, model.nodes, min_flux=_MIN_BALL_FLUX
+        ).keys()
+    # §3.5.4 ConcentratedSource: every structural element is potentially exposed
+    # (the source radiates in all directions with unlimited range).  Include all
+    # beam elements with any facing quads; exact per-quad clipping is done later
+    # when q_per_quad is assembled.  Here we conservatively include all elements.
+    if active_csrcs:
+        result |= set(model.elements.keys())
+    # §3.5.5 LineSource: same conservative approach as ConcentratedSource — the
+    # line radiates in all directions with unlimited range; exact per-quad flux
+    # clipping (cos(θ) ≤ 0 → 0) is applied later in _line_source_per_quad_flux.
+    if active_lsrcs:
+        result |= set(model.elements.keys())
     return result
 
 
-def _exposed_shell_ids(model, active_zones, active_balls) -> set[int]:
+def _exposed_shell_ids(
+    model,
+    active_zones,
+    active_balls,
+    active_csrcs: list[ConcentratedSource] | None = None,
+    active_lsrcs: list[LineSource] | None = None,
+) -> set[int]:
     if not model.shell_elements:
         return set()
     result: set[int] = set()
@@ -396,15 +803,14 @@ def _exposed_shell_ids(model, active_zones, active_balls) -> set[int]:
         else:
             for ball in active_balls:
                 dist = float(np.linalg.norm(mid - ball.center))
-                if ball.flux_at(dist) > 0.0:
+                if ball.max_flux_at_distance(dist) > _MIN_BALL_FLUX:
                     result.add(shell.eid)
                     break
-                # §3.5.4 falloff beyond r2
-                if dist > ball.r2:
-                    base_flux = ball.flux2 * (ball.r2 / dist) ** 2
-                    if base_flux > _MIN_FALLOFF_FLUX:
-                        result.add(shell.eid)
-                        break
+            else:
+                # §3.5.4 ConcentratedSource / §3.5.5 LineSource: include shells
+                # (exact clipping done later by per-quad flux computation)
+                if active_csrcs or active_lsrcs:
+                    result.add(shell.eid)
     return result
 
 
@@ -412,34 +818,66 @@ def _bc_for_element(
     midpoint: np.ndarray,
     active_zones: list[FireZone],
     active_balls: list[RadiationBall],
+    active_csrcs: list[ConcentratedSource],
     config: AnalysisConfig,
+    extra_pts: list[np.ndarray] | None = None,
+    active_lsrcs: list[LineSource] | None = None,
 ) -> tuple:
     """
-    Determine fire BC parameters for an element at `midpoint`.
+    Determine fire BC parameters for an element.
+
+    Checks `midpoint` plus any additional `extra_pts` (e.g. beam endpoints) so
+    that elements straddling a zone boundary are correctly identified.
 
     Returns (fire_temp_fn, epsilon_m, h_conv, q_prescribed_fn,
-             covering_zones, ref_zone).
-    Returns (None, ...) when no source covers the midpoint.
+             covering_zones, ref_zone, covering_ball).
 
-    RadiationBall takes precedence over FireZone when both cover an element;
-    in that case covering_zones is empty.
+    ``covering_ball`` is the RadiationBall giving the strongest flux (direction-
+    agnostic upper bound) at the midpoint (or None), gated on `_MIN_BALL_FLUX`.
+    When set, the caller builds a per-quad flux array via
+    ``_rad_ball_per_quad_flux`` rather than applying a uniform flux to every
+    face. In that case ``q_prescribed_fn`` returns 0.
+
+    Returns (None, ...) when no source covers any of the check points.
+
+    Priority:
+        RadiationBall > ConcentratedSource/LineSource > FireZone when sources overlap.
+        RadiationBall, ConcentratedSource, and LineSource all set epsilon_m=0 (flux
+        is fully prescribed per-quad; re-radiation is handled by eps_rerad).
     """
     covering_balls: list[tuple[RadiationBall, float]] = []
     for b in active_balls:
         dist = float(np.linalg.norm(midpoint - b.center))
-        flux = b.flux_at(dist)
-        if flux > 0.0:
+        flux = b.max_flux_at_distance(dist)
+        if flux > _MIN_BALL_FLUX:
             covering_balls.append((b, flux))
 
     if covering_balls:
-        _ref_ball, ref_flux = max(covering_balls, key=lambda x: x[1])
-        fire_temp = lambda t: 20.0              # noqa: E731
-        q_fn      = lambda t, _f=ref_flux: _f  # noqa: E731
-        return fire_temp, 0.0, 0.0, q_fn, [], None
+        ref_ball, _ref_flux = max(covering_balls, key=lambda x: x[1])
+        fire_temp = lambda t: 20.0      # noqa: E731
+        # Flux is applied per-quad with cos(θ) directionality by the caller, so
+        # the uniform q_fn contributes nothing here.
+        q_fn = lambda _t: 0.0           # noqa: E731
+        return fire_temp, 0.0, 0.0, q_fn, [], None, ref_ball
 
-    covering_zones = [z for z in active_zones if z.contains_midpoint(midpoint)]
+    # Collect zones covering any of the check points (midpoint + endpoints)
+    check_pts = [midpoint] + (extra_pts or [])
+    covering_set: set[int] = set()
+    covering_zones: list[FireZone] = []
+    for pt in check_pts:
+        for z in active_zones:
+            if id(z) not in covering_set and z.contains_point(pt):
+                covering_set.add(id(z))
+                covering_zones.append(z)
+
     if not covering_zones:
-        return None, 0.0, 0.0, lambda _t: 0.0, [], None
+        # ConcentratedSource/LineSource: unlimited range — every element is potentially
+        # covered.  The actual per-quad flux is applied via q_per_quad in the solver;
+        # here we only need to mark the element as active (fire_temp=ambient, eps=0, h=0).
+        if active_csrcs or active_lsrcs:
+            fire_temp = lambda t: 20.0   # noqa: E731
+            return fire_temp, 0.0, 0.0, lambda _t: 0.0, [], None, None
+        return None, 0.0, 0.0, lambda _t: 0.0, [], None, None
 
     if len(covering_zones) == 1:
         fire_temp = covering_zones[0].temperature
@@ -448,30 +886,9 @@ def _bc_for_element(
             return max(z.temperature(t) for z in _zones)
 
     ref_zone  = max(covering_zones, key=lambda z: z.temperature(config.t_end))
-    epsilon_m = ref_zone.epsilon_fire * 0.7
+    epsilon_m = ref_zone.effective_epsilon_fire * 0.7
     h_conv    = ref_zone.h_conv
-    return fire_temp, epsilon_m, h_conv, lambda _t: 0.0, covering_zones, ref_zone
-
-
-def _bc_falloff_ball(
-    midpoint: np.ndarray,
-    active_balls: list[RadiationBall],
-) -> RadiationBall | None:
-    """
-    Return the RadiationBall providing the strongest §3.5.4 falloff flux
-    to *midpoint* (beyond r2), or None if no ball exceeds _MIN_FALLOFF_FLUX.
-    """
-    best_ball: RadiationBall | None = None
-    best_flux = _MIN_FALLOFF_FLUX  # must strictly exceed threshold
-    for ball in active_balls:
-        dist = float(np.linalg.norm(midpoint - ball.center))
-        if dist <= ball.r2:
-            continue  # already handled by direct coverage path
-        base_flux = ball.flux2 * (ball.r2 / dist) ** 2
-        if base_flux > best_flux:
-            best_flux = base_flux
-            best_ball = ball
-    return best_ball
+    return fire_temp, epsilon_m, h_conv, lambda _t: 0.0, covering_zones, ref_zone, None
 
 
 def _rad_ball_per_quad_flux(
@@ -479,23 +896,41 @@ def _rad_ball_per_quad_flux(
     mesh: BeamSurfaceMesh,
     elem,
     model_nodes: dict,
+    double_sided: bool = False,
 ) -> np.ndarray:
     """
-    Compute per-quad prescribed flux [W/m²] for a beam element outside r2.
+    Compute per-quad prescribed flux [W/m²] for a beam element covered by a ball.
 
-    FAHTS §3.5.4 concentrated source in far-field:
-        q_face = flux2 · (r2/r)² · cos(θ_face)
+    Evaluated independently at each quad's own centroid via
+    ``ball.incident_flux(centroid, normal)`` (see rad_ball.py):
+        d <= radius  : q = ball.flux                              (engulfed — all faces)
+        d >  radius  : q = ball.flux * (radius/d)**2 * cos(θ)     (exterior, 0 if facing away)
 
-    where θ_face is the angle between the face outward normal and the direction
-    from the ball to the element (i.e. the face must point toward the ball to
-    receive positive flux).  Faces pointing away receive 0.
+    where d is the ball-centre-to-quad-centroid distance and θ is the angle
+    between the face outward normal and the direction from that specific
+    quad centroid toward the ball centre.
+
+    ``double_sided=True`` (I/H profiles — see §3.4.1 note at the call site):
+    the mesh stores only ONE fixed normal per plate (e.g. the I-beam web is
+    only ever meshed on one lateral side), but the plate is physically exposed
+    on both faces.  For any single external point source, at most one of a
+    flat plate's two opposite normals can have cos(θ) > 0 — so this evaluates
+    both ``normal`` and ``-normal`` and keeps whichever is actually lit,
+    instead of silently zeroing the quad when the ball happens to be on the
+    side the mesh's stored normal doesn't point toward.  This never sums both
+    sides (that would double-count) — exactly one is ever nonzero for a
+    single point source.
 
     Parameters
     ----------
-    ball        : RadiationBall source
-    mesh        : BeamSurfaceMesh for this element (beam-local coords)
-    elem        : BeamElement (provides direction, local_z, n1 for frame)
-    model_nodes : {nid: Node} global node positions
+    ball         : RadiationBall source
+    mesh         : BeamSurfaceMesh for this element (beam-local coords)
+    elem         : BeamElement (provides direction, local_z, n1 for frame)
+    model_nodes  : {nid: Node} global node positions
+    double_sided : True for open-profile sections (I/H) whose plates are
+                   exposed on both faces; False for BOX/PIPE outer walls
+                   (single genuine exposed face — the other side faces a
+                   sealed interior cavity and must NOT pick up ball flux).
 
     Returns
     -------
@@ -504,30 +939,152 @@ def _rad_ball_per_quad_flux(
     R      = _beam_local_to_global(elem)
     origin = model_nodes[elem.n1].xyz
 
-    midpoint = elem.midpoint(model_nodes)
-    r_vec    = midpoint - ball.center
-    r        = float(np.linalg.norm(r_vec))
-    if r < 1e-9:
-        return np.zeros(mesh.n_quads)
-
-    # Unit vector FROM ball TOWARD element; radiation travels in this direction.
-    r_hat     = r_vec / r
-    base_flux = ball.flux2 * (ball.r2 / r) ** 2
-
     q_per_quad = np.zeros(mesh.n_quads)
     for q in range(mesh.n_quads):
+        # Quad centroid in global coordinates
+        centroid_local  = mesh.nodes[mesh.quads[q]].mean(axis=0)   # (3,) beam-local
+        centroid_global = origin + R @ centroid_local               # global
+
         normal_local  = _quad_outward_normal_local(mesh, q)
         normal_global = R @ normal_local
         norm = np.linalg.norm(normal_global)
         if norm > 1e-9:
-            normal_global /= norm
-        # Face receives radiation when its outward normal points toward the ball,
-        # i.e. dot(normal, direction_to_ball) > 0, where direction_to_ball = -r_hat.
-        cos_theta = float(np.dot(normal_global, -r_hat))
-        if cos_theta > 0.0:
-            q_per_quad[q] = base_flux * cos_theta
+            normal_global = normal_global / norm
+
+        q_val = ball.incident_flux(centroid_global, normal_global)
+        if double_sided:
+            q_val = max(q_val, ball.incident_flux(centroid_global, -normal_global))
+        q_per_quad[q] = q_val
 
     return q_per_quad
+
+
+def _concentrated_source_per_quad_flux(
+    csrcs: list[ConcentratedSource],
+    mesh: BeamSurfaceMesh,
+    elem,
+    model_nodes: dict,
+    t: float = 0.0,
+    double_sided: bool = False,
+) -> np.ndarray:
+    """
+    Compute per-quad prescribed flux [W/m²] from all ConcentratedSource objects.
+
+    FAHTS §3.5.4:
+        q_i = E(t) * cos(theta_i) / (4 * pi * r_i^2)
+
+    where theta_i is the angle between the quad outward normal and the direction
+    from the source to the quad centroid.  Faces pointing away receive 0.
+
+    Per-quad centroids are computed in global coordinates by transforming
+    beam-local quad node positions using the beam frame rotation matrix.
+
+    ``double_sided=True``: for each source independently, evaluate both
+    ``quad_normals`` and ``-quad_normals`` and keep whichever side that
+    source actually lights up per quad (see _rad_ball_per_quad_flux for the
+    full rationale — I/H profile plates are exposed on both faces).  Done
+    per-source-then-summed (not summed-then-maxed) so multiple sources
+    hitting opposite faces of the same plate both contribute correctly.
+
+    Parameters
+    ----------
+    csrcs        : list of active ConcentratedSource objects
+    mesh         : BeamSurfaceMesh for this element (beam-local coords)
+    elem         : BeamElement (provides direction, local_z, n1 for frame)
+    model_nodes  : {nid: Node} global node positions
+    t            : simulation time [s] (for time-dependent power)
+    double_sided : True for open-profile (I/H) plates exposed on both faces.
+
+    Returns
+    -------
+    (n_quads,) array of summed per-quad flux values [W/m²]
+    """
+    R      = _beam_local_to_global(elem)
+    origin = model_nodes[elem.n1].xyz
+
+    # Compute global centroid and outward normal for each quad
+    quad_centroids = np.zeros((mesh.n_quads, 3))
+    quad_normals   = np.zeros((mesh.n_quads, 3))
+    for q in range(mesh.n_quads):
+        node_q_local     = mesh.nodes[mesh.quads[q]]           # (4, 3) beam-local
+        centroid_local   = node_q_local.mean(axis=0)           # (3,)
+        quad_centroids[q] = origin + R @ centroid_local        # global
+        normal_local     = _quad_outward_normal_local(mesh, q)
+        normal_global    = R @ normal_local
+        norm             = np.linalg.norm(normal_global)
+        quad_normals[q]  = normal_global / norm if norm > 1e-9 else normal_global
+
+    q_total = np.zeros(mesh.n_quads)
+    for csrc in csrcs:
+        q_pos = csrc.per_quad_flux(quad_centroids, quad_normals, t=t)
+        if double_sided:
+            q_neg = csrc.per_quad_flux(quad_centroids, -quad_normals, t=t)
+            q_total += np.maximum(q_pos, q_neg)
+        else:
+            q_total += q_pos
+    return q_total
+
+
+def _line_source_per_quad_flux(
+    lsrcs: list[LineSource],
+    mesh: BeamSurfaceMesh,
+    elem,
+    model_nodes: dict,
+    t: float = 0.0,
+    n_segments: int = 10,
+    double_sided: bool = False,
+) -> np.ndarray:
+    """
+    Compute per-quad prescribed flux [W/m²] from all LineSource objects.
+
+    FAHTS §3.5.5: the line is divided into n_segments discrete sub-sources each
+    treated as a concentrated source (§3.5.4).  End sub-sources emit 50% of the
+    interior energy.  Contributions are summed across all sub-sources and sources.
+
+    Per-quad centroids are computed in global coordinates by transforming
+    beam-local quad node positions using the beam frame rotation matrix.
+
+    ``double_sided=True``: see _concentrated_source_per_quad_flux — evaluated
+    per-source-then-summed so multiple sources on opposite faces of the same
+    plate both contribute correctly.
+
+    Parameters
+    ----------
+    lsrcs        : list of active LineSource objects
+    mesh         : BeamSurfaceMesh for this element (beam-local coords)
+    elem         : BeamElement (provides direction, local_z, n1 for frame)
+    model_nodes  : {nid: Node} global node positions
+    t            : simulation time [s] (for time-dependent power)
+    n_segments   : discrete sub-sources per line source (default 10)
+    double_sided : True for open-profile (I/H) plates exposed on both faces.
+
+    Returns
+    -------
+    (n_quads,) array of summed per-quad flux values [W/m²]
+    """
+    R      = _beam_local_to_global(elem)
+    origin = model_nodes[elem.n1].xyz
+
+    quad_centroids = np.zeros((mesh.n_quads, 3))
+    quad_normals   = np.zeros((mesh.n_quads, 3))
+    for q in range(mesh.n_quads):
+        node_q_local      = mesh.nodes[mesh.quads[q]]
+        centroid_local    = node_q_local.mean(axis=0)
+        quad_centroids[q] = origin + R @ centroid_local
+        normal_local      = _quad_outward_normal_local(mesh, q)
+        normal_global     = R @ normal_local
+        norm              = np.linalg.norm(normal_global)
+        quad_normals[q]   = normal_global / norm if norm > 1e-9 else normal_global
+
+    q_total = np.zeros(mesh.n_quads)
+    for lsrc in lsrcs:
+        q_pos = lsrc.per_quad_flux(quad_centroids, quad_normals, t=t, n_segments=n_segments)
+        if double_sided:
+            q_neg = lsrc.per_quad_flux(quad_centroids, -quad_normals, t=t, n_segments=n_segments)
+            q_total += np.maximum(q_pos, q_neg)
+        else:
+            q_total += q_pos
+    return q_total
 
 
 def _beam_local_to_global(elem) -> tuple[np.ndarray, np.ndarray]:
@@ -576,15 +1133,17 @@ def _element_view_factors(
     model_nodes: dict,
     covering_zones: list[FireZone],
     n_sub: int = 4,
+    n_steel_sub: int = 2,
 ) -> np.ndarray:
     """
     Compute FAHTS §3.3.4 geometric view factor for every quad in *mesh*.
 
-    Both the steel surface and each fire zone face are treated as sub-patches of
-    their respective surfaces. The steel quad is the sub-patch of surface 1; the
-    fire zone face sub-patches (from FireZone.face_patches) are surface 2.
+    Implements the full double-area numerical integration:
 
-    F[q] = Σ_j  cosθ_i · cosθ_j / (π·r²) · A_j      (clamped to [0, 1])
+        F_12 = (1/A1) · Σ_i Σ_j  cosθ_i · cosθ_j / (π·r²) · Ai · Aj
+
+    Surface 1 (each steel quad) is subdivided into n_steel_sub² sub-patches;
+    surface 2 (fire zone faces) is subdivided via FireZone.face_patches(n_sub).
 
     Parameters
     ----------
@@ -593,6 +1152,7 @@ def _element_view_factors(
     model_nodes   : {nid: Node} dict for global node positions
     covering_zones: active FireZone objects covering this element
     n_sub         : fire zone face subdivision count (default 4)
+    n_steel_sub   : steel quad subdivision count per edge (default 2)
 
     Returns
     -------
@@ -608,8 +1168,8 @@ def _element_view_factors(
 
     F = np.zeros(mesh.n_quads)
     for q in range(mesh.n_quads):
-        centroid_local = mesh.nodes[mesh.quads[q]].mean(axis=0)
-        centroid_global = origin + R @ centroid_local
+        quad_local = mesh.nodes[mesh.quads[q]]           # (4, 3) beam-local
+        quad_global = origin + (R @ quad_local.T).T      # (4, 3) global
 
         normal_local = _quad_outward_normal_local(mesh, q)
         normal_global = R @ normal_local
@@ -617,7 +1177,9 @@ def _element_view_factors(
         if norm > 1e-9:
             normal_global /= norm
 
-        F[q] = geometric_view_factor(centroid_global, normal_global, all_patches)
+        F[q] = geometric_view_factor_double_area(
+            quad_global, normal_global, all_patches, n_steel_sub,
+        )
 
     return F
 
@@ -645,14 +1207,13 @@ def _build_beam_surface_mesh(sec, length: float, config: AnalysisConfig) -> Beam
 
 def _compute_M_extra(sec, mesh, elem_length: float) -> np.ndarray | None:
     """
-    Heat accumulation element mass for hollow BOX/PIPE cross-section meshes.
+    Heat accumulation element capacitance for hollow BOX/PIPE meshes.
 
-    Retained for tests and backward compatibility; not called in the main analysis path.
+    Legacy cross-section meshes have explicit inner nodes, so the enclosed-fluid
+    capacity is added there.  Active surface meshes have no inner node set; for
+    those, the same total capacity is distributed over existing thermal DOFs by
+    tributary surface area so the global energy balance includes §3.3.5 inertia.
     """
-    inner_ids = mesh.inner_node_indices
-    if not inner_ids:
-        return None
-
     if isinstance(sec, BoxSection):
         A_inner = sec.inner_height * sec.inner_width
     elif isinstance(sec, PipeSection):
@@ -663,11 +1224,188 @@ def _compute_M_extra(sec, mesh, elem_length: float) -> np.ndarray | None:
     if A_inner <= 0.0:
         return None
 
-    m_acc   = A_inner * elem_length * 1200.0 / len(inner_ids)
-    M_extra = np.zeros(mesh.n_nodes)
-    for idx in inner_ids:
-        M_extra[idx] = m_acc
-    return M_extra
+    total_acc = A_inner * elem_length * 1200.0
+    inner_ids = getattr(mesh, "inner_node_indices", None)
+    if inner_ids:
+        m_acc   = total_acc / len(inner_ids)
+        M_extra = np.zeros(mesh.n_nodes)
+        for idx in inner_ids:
+            M_extra[idx] = m_acc
+        return M_extra
+
+    if isinstance(mesh, BeamSurfaceMesh):
+        M_extra = np.zeros(mesh.n_nodes)
+        M_extra[:] = total_acc * mesh.node_area_weights
+        return M_extra
+
+    return None
+
+
+# ── Global DOF map — co-located node merging ──────────────────────────────────
+
+def _compute_global_node_positions(
+    eids: list[int],
+    meshes: dict,
+    model: FEMModel,
+    is_surface: dict[int, bool],
+) -> dict[int, np.ndarray | None]:
+    """
+    Return world-space (global) 3-D coordinates for every mesh node.
+
+    Beam elements: transform beam-local coords via rotation + n1 origin.
+    QUADSHEL     : PlateSurfaceMesher nodes are already in global coords.
+    TRISHELL     : 1-D through-thickness mesh — no global spatial meaning → None.
+    """
+    positions: dict[int, np.ndarray | None] = {}
+    for eid in eids:
+        if eid in model.elements:
+            elem   = model.elements[eid]
+            R      = _beam_local_to_global(elem)
+            origin = model.nodes[elem.n1].xyz.copy()
+            if elem.ecc1 is not None:
+                origin += np.asarray(elem.ecc1, dtype=float)
+            positions[eid] = origin + (R @ meshes[eid].nodes.T).T
+        elif is_surface.get(eid, False):
+            positions[eid] = meshes[eid].nodes.copy()  # already global for QUADSHEL
+        else:
+            positions[eid] = None  # TRISHELL: 1-D mesh, skip spatial merging
+    return positions
+
+
+def _build_global_dof_map(
+    eids: list[int],
+    meshes: dict,
+    global_positions: dict[int, np.ndarray | None],
+    tol: float = 1e-3,
+    model: FEMModel | None = None,
+    struct_tol: float = 0.025,
+) -> tuple[dict[int, np.ndarray], int]:
+    """
+    Merge co-located surface-mesh nodes across elements into shared global DOFs.
+
+    Two merge passes are performed:
+
+    Pass 1 — proximity (1 mm default): merges nodes that are exactly co-located
+    in global space.  Handles end-to-end beam connections where the last
+    axial slice of one element sits exactly on the first slice of the next.
+
+    Pass 2 — structural-node-aware (25 mm default): for every structural node
+    in the FEM model, collects ALL end-face mesh nodes from connected beam
+    elements and merges pairs from *different* elements that are within
+    *struct_tol* of each other.  This catches perpendicular-crossing junctions
+    (e.g. two I-beams at right angles) where the web-offset means the closest
+    nodes are ~tw/√2 ≈ 4–14 mm apart — outside Pass-1 tolerance but correctly
+    identified because they share a structural node.
+
+    Elements without global positions (TRISHELL) receive independent DOFs
+    appended after the spatial ones.
+
+    Returns
+    -------
+    gdof_map : {eid: (n_nodes,) int array}  local node → global DOF index
+    n_global : total number of unique global DOFs
+    """
+    from scipy.spatial import cKDTree
+
+    all_coords: list[np.ndarray] = []
+    all_labels: list[tuple[int, int]] = []  # (eid, local_node_idx)
+
+    for eid in eids:
+        pos = global_positions.get(eid)
+        if pos is None:
+            continue
+        for i in range(len(pos)):
+            all_coords.append(pos[i])
+            all_labels.append((eid, i))
+
+    n_spatial = len(all_labels)
+    parent = list(range(n_spatial))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # ── Pass 1: exact proximity (end-to-end connections) ─────────────────────
+    if n_spatial > 0:
+        tree = cKDTree(np.array(all_coords))
+        for i, j in tree.query_pairs(tol):
+            _union(i, j)
+
+    # ── Pass 2: structural-node-aware merge (perpendicular junctions) ─────────
+    # For each structural node, merge the closest end-face node pairs from
+    # different elements within struct_tol.  Only beam elements participate;
+    # the model argument enables this pass.
+    if model is not None and n_spatial > 0:
+        # Reverse lookup: (eid, local_idx) → flat index in all_labels
+        label_to_flat: dict[tuple[int, int], int] = {
+            lbl: i for i, lbl in enumerate(all_labels)
+        }
+        coords_arr = np.array(all_coords)
+
+        for nid in model.nodes:
+            # Collect end-face flat-indices from all analysis beam elements at nid
+            end_flat: list[int] = []
+            end_eids: list[int] = []
+
+            for eid in eids:
+                if eid not in model.elements:
+                    continue
+                elem = model.elements[eid]
+                if elem.n1 != nid and elem.n2 != nid:
+                    continue
+                pos = global_positions.get(eid)
+                if pos is None:
+                    continue
+
+                x_target = 0.0 if elem.n1 == nid else elem.length
+                x_local  = meshes[eid].nodes[:, 0]
+                for local_idx in np.where(np.abs(x_local - x_target) < 1e-9)[0]:
+                    key = (eid, int(local_idx))
+                    if key in label_to_flat:
+                        end_flat.append(label_to_flat[key])
+                        end_eids.append(eid)
+
+            if len(end_flat) < 2:
+                continue
+
+            # Local proximity search among these end-face nodes
+            local_pts = coords_arr[end_flat]
+            local_tree = cKDTree(local_pts)
+            for li, lj in local_tree.query_pairs(struct_tol):
+                if end_eids[li] != end_eids[lj]:   # only across elements
+                    _union(end_flat[li], end_flat[lj])
+
+    # ── Assign global DOF indices ─────────────────────────────────────────────
+    root_to_dof: dict[int, int] = {}
+    dof_idx = 0
+    label_to_dof: dict[tuple[int, int], int] = {}
+    for i, label in enumerate(all_labels):
+        root = _find(i)
+        if root not in root_to_dof:
+            root_to_dof[root] = dof_idx
+            dof_idx += 1
+        label_to_dof[label] = root_to_dof[root]
+
+    gdof_map: dict[int, np.ndarray] = {}
+    for eid in eids:
+        pos     = global_positions.get(eid)
+        n_nodes = meshes[eid].n_nodes
+        if pos is None:
+            gdof_map[eid] = np.arange(dof_idx, dof_idx + n_nodes, dtype=np.intp)
+            dof_idx += n_nodes
+        else:
+            gdof_map[eid] = np.array(
+                [label_to_dof[(eid, i)] for i in range(n_nodes)], dtype=np.intp
+            )
+
+    return gdof_map, dof_idx
 
 
 # ── USFOS-style console log helpers ──────────────────────────────────────────
@@ -681,8 +1419,13 @@ def _log_header(
     total: int,
     active_zones: list,
     active_balls: list,
+    active_csrcs: list | None = None,
+    active_lsrcs: list | None = None,
 ) -> None:
-    n_sources = len(active_zones) + len(active_balls)
+    n_sources = (
+        len(active_zones) + len(active_balls)
+        + len(active_csrcs or []) + len(active_lsrcs or [])
+    )
     n_steps   = max(1, round(config.t_end / config.dt))
     src_name  = model.source_file.name if model.source_file else "unknown"
     stamp     = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")

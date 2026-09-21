@@ -7,6 +7,15 @@ without a display.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from fahts.core.model.material import MATERIAL_STANDARD
+
+if TYPE_CHECKING:
+    from fahts.core.heat.bc.insulation import InsulationLayer
+    from fahts.core.heat.bc.prescribed_node_bc import PrescribedNodeBC
+    from fahts.core.heat.sources.concentrated_source import ConcentratedSource
+    from fahts.core.heat.sources.line_source import LineSource
 
 
 @dataclass
@@ -43,7 +52,41 @@ class AnalysisConfig:
         n_layers:   Number of FE layers through wall thickness.  Default 1.
         elem_size:  Target element size [m].  None = auto.
 
+    mass_matrix: "lumped" (default) or "consistent".
+    analysis_mode: Selects between strict theory-manual conformance and faster
+                engineering approximations.  Valid values:
+
+                ``"engineering"`` (default — preserves all existing behaviour):
+                    - Lumped mass matrix (faster, already the default).
+                    - Centroid-point view-factor form used at the default n_steel_sub=2
+                      level; no additional overrides.
+                    - Midpoint exposure check only (existing behaviour).
+
+                ``"theory"`` (strict SINTEF FAHTS manual conformance):
+                    - Consistent mass matrix overrides ``mass_matrix`` locally inside
+                      ``run_analysis``; the ``AnalysisConfig.mass_matrix`` field is NOT
+                      mutated.
+                    - Full double-area view-factor integration with n_steel_sub=2 (already
+                      the default; confirmed and left as-is).
+                    - Logs an INFO message when theory mode is active.
+                    - Nonlinear Picard iteration enabled (already on by default inside
+                      ``GlobalThermalSolver``).
+
+                Both modes use the same Crank-Nicolson θ=1/2 time integration and the
+                same physical BC formulas — only the numerical approximation quality
+                differs.
+    material_standard: Identifies the standard from which thermal material
+                properties (k(T), cp(T), ρ) are taken.  Default is the module-level
+                constant ``MATERIAL_STANDARD`` from ``fahts.core.model.material``
+                ("EN1993-1-2:2005 Annex C").  Override only when using a non-EC3
+                material model (e.g. the USFOS thermpar tables).
     element_ids: Beam element IDs to analyse.  Empty list = all exposed elements.
+    insulation: Optional InsulationLayer (§3.3.3) applied to all analysed elements.
+                When set, the insulation replaces the direct fire–steel convective/
+                radiative BC with a series-resistance boundary.  Default None.
+    prescribed_node_bcs: List of PrescribedNodeBC (§3.5.2).  Each entry pins
+                selected surface-mesh node indices to a temperature (constant or
+                time-varying) by Dirichlet elimination.  Default empty list.
     """
 
     t_end: float
@@ -67,7 +110,56 @@ class AnalysisConfig:
     # Legacy / other sections
     n_layers: int = 1
     elem_size: float | None = None
+    mass_matrix: str = "lumped"
+    analysis_mode: str = "engineering"
+    material_standard: str = field(default_factory=lambda: MATERIAL_STANDARD)
+    # ── Steel thermal material + emissivity (GUI Material dialog) ──────────────
+    # property_model selects the temperature-dependent property source:
+    #   "en1993" — EN 1993-1-2 Annex C formulas (k/cp from formulas; ρ, ε editable)
+    #   "usfos"  — USFOS thermpar × tempdepy tables (k_ref/c_ref × fixed factor curve)
+    # epsilon_steel is the grey-body STEEL surface emissivity ε_steel (PDF §3.2.4),
+    # which multiplies the whole net radiant flux; the fire/gas emissivity ε_gas is
+    # carried per FireZone (1.0 for ISO/HC).
+    # Defaults preserve historical production behaviour (EN 1993-1-2, ε_steel=0.7);
+    # the GUI Material dialog pre-loads the fahts.fem values (property_model="usfos",
+    # density=7850, c_ref=510, k_ref=50, epsilon_steel=0.85).
+    property_model: str = "en1993"
+    density: float = 7850.0
+    c_ref: float = 510.0
+    k_ref: float = 50.0
+    epsilon_steel: float = 0.7
+    # Volumetric heat capacity of enclosed gas/air inside hollow sections [J/m³·K].
+    # Used for BOX/PIPE enclosed-air thermal mass.  Default matches standard air.
+    enclosed_gas_rho_c: float = 1200.0
+    # Temperature-dependent factor tables for USFOS property model.
+    # Each entry is (T_celsius, factor); empty list → use module defaults in material.py.
+    # cp(T) = c_ref × interp(cp_factor_table, T)
+    # k(T)  = k_ref × interp(k_factor_table, T)
+    cp_factor_table: list[tuple[float, float]] = field(default_factory=list)
+    k_factor_table:  list[tuple[float, float]] = field(default_factory=list)
+    # USFOS benchmark mode (opt-in, default OFF).  When True the solver switches
+    # steel thermal properties to the USFOS thermpar/tempdepy multiplier tables
+    # (SteelMaterial.usfos_mode=True) and sets the RadiationBall re-radiation
+    # emissivity to 0.85 (matching ``emiss`` in usfos_verification_results/fahts.fem).
+    # Used ONLY for direct comparison against a USFOS reference run; production
+    # analyses use EN 1993-1-2 Annex C (the architectural default).
+    usfos_benchmark_mode: bool = False
     element_ids: list[int] = field(default_factory=list)
+    # Optional insulation layer applied to all analysed elements (§3.3.3)
+    insulation: InsulationLayer | None = field(default=None)
+    # Optional prescribed nodal boundary temperatures §3.5.2.
+    # Each entry pins a set of surface-mesh node indices to a given temperature
+    # at every time step via Dirichlet elimination.  When non-empty, the BCs are
+    # forwarded to SurfaceTransientSolver unchanged.
+    prescribed_node_bcs: list[PrescribedNodeBC] = field(default_factory=list)
+    # Optional concentrated point sources §3.5.4.  Each source radiates energy
+    # in all directions; each surface quad receives q_i = E·cos(θ)/(4π·r²).
+    # Forwarded to run_analysis() as additional entries in fire_zones.
+    concentrated_sources: list[ConcentratedSource] = field(default_factory=list)
+    # Optional line sources §3.5.5.  Each source distributes energy along a
+    # finite line segment as n discrete concentrated sub-sources (50% at ends).
+    # Forwarded to run_analysis() alongside concentrated_sources.
+    line_sources: list[LineSource] = field(default_factory=list)
 
     # ── Validation ────────────────────────────────────────────────────────────
 
@@ -120,6 +212,43 @@ class AnalysisConfig:
             raise ValueError(f"n_layers must be >= 1, got {self.n_layers}")
         if self.elem_size is not None and self.elem_size <= 0:
             raise ValueError(f"elem_size must be positive, got {self.elem_size}")
+        if self.mass_matrix not in {"lumped", "consistent"}:
+            raise ValueError(
+                "mass_matrix must be 'lumped' or 'consistent', "
+                f"got {self.mass_matrix!r}"
+            )
+        if self.analysis_mode not in {"engineering", "theory"}:
+            raise ValueError(
+                "analysis_mode must be 'engineering' or 'theory', "
+                f"got {self.analysis_mode!r}"
+            )
+        if self.property_model not in {"en1993", "usfos"}:
+            raise ValueError(
+                "property_model must be 'en1993' or 'usfos', "
+                f"got {self.property_model!r}"
+            )
+        if self.density <= 0:
+            raise ValueError(f"density must be positive, got {self.density}")
+        if self.c_ref <= 0:
+            raise ValueError(f"c_ref must be positive, got {self.c_ref}")
+        if self.k_ref <= 0:
+            raise ValueError(f"k_ref must be positive, got {self.k_ref}")
+        if not 0.0 <= self.epsilon_steel <= 1.0:
+            raise ValueError(
+                f"epsilon_steel must be in [0, 1], got {self.epsilon_steel}"
+            )
+        if self.enclosed_gas_rho_c < 0.0:
+            raise ValueError(
+                f"enclosed_gas_rho_c must be >= 0, got {self.enclosed_gas_rho_c}"
+            )
+        for label, table in (("cp_factor_table", self.cp_factor_table),
+                              ("k_factor_table",  self.k_factor_table)):
+            if len(table) > 1:
+                Ts = [t for t, _ in table]
+                if any(Ts[i] >= Ts[i + 1] for i in range(len(Ts) - 1)):
+                    raise ValueError(
+                        f"{label}: temperatures must be strictly increasing"
+                    )
 
     # ── Convenience ───────────────────────────────────────────────────────────
 
@@ -141,5 +270,6 @@ class AnalysisConfig:
             f"len={self.n_length_i})  "
             f"PIPE(circ={self.c_circ},len={self.n_length_p})  "
             f"Shell(12={self.mesh_12},14={self.mesh_14})  "
+            f"mass={self.mass_matrix}  "
             f"elements={n_el}"
         )

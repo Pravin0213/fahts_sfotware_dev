@@ -262,14 +262,16 @@ class TestRadiationBallSource:
 
     def _make_ball(self) -> "RadiationBall":
         from fahts.core.heat.sources.rad_ball import RadiationBall
-        # Beam midpoint is at (0.5, 0, 0); inner zone r1=1m covers it.
+        # Ball sits above the beam at (0.5, 0, 1); beam midpoint (0.5,0,0) is at
+        # distance 1 m, outside the 0.5 m radius (exterior regime).  Offsetting the
+        # centre (rather than placing it on the midpoint) gives the per-quad cos(θ)
+        # directional model a well-defined ball→element direction so the top face
+        # is exposed.
         return RadiationBall(
             name="TestBall",
-            center=np.array([0.5, 0.0, 0.0]),
-            r1=1.0,
-            flux1=50_000.0,
-            r2=10.0,
-            flux2=5_000.0,
+            center=np.array([0.5, 0.0, 1.0]),
+            radius=0.5,
+            flux=50_000.0,
             active=True,
         )
 
@@ -286,33 +288,30 @@ class TestRadiationBallSource:
         assert T_cen[-1] > T_cen[0]
 
     def test_rad_ball_outer_zone_lower_flux(self):
-        """Element in outer zone (r1 < d ≤ r2) receives flux2, still heats up."""
+        """Element well outside the ball radius still heats up via inverse-square flux."""
         from fahts.core.heat.sources.rad_ball import RadiationBall
         model = _make_model()
-        # Place ball so beam midpoint (0.5, 0, 0) is in outer zone (r1=0.1, r2=2m)
+        # Ball above the beam; midpoint (0.5,0,0) at d=1m is well outside radius=0.1m,
+        # so this exercises the exterior flux*(radius/d)^2*cos(θ) regime.
         ball = RadiationBall(
             name="OuterZone",
-            center=np.array([0.5, 0.0, 0.0]),
-            r1=0.1,
-            flux1=500_000.0,
-            r2=2.0,
-            flux2=5_000.0,
+            center=np.array([0.5, 0.0, 1.0]),
+            radius=0.1,
+            flux=500_000.0,
             active=True,
         )
         result = run_analysis(model, [ball], _make_config())
         assert result.T_centroid[-1, 0] > result.T_centroid[0, 0]
 
-    def test_rad_ball_beyond_r2_no_exposure(self):
-        """Ball too far away → no exposed elements → ValueError."""
+    def test_rad_ball_too_far_no_exposure(self):
+        """Ball too far away (negligible inverse-square flux) → no exposed elements → ValueError."""
         from fahts.core.heat.sources.rad_ball import RadiationBall
         model = _make_model()
         ball = RadiationBall(
             name="FarBall",
             center=np.array([100.0, 100.0, 100.0]),
-            r1=0.5,
-            flux1=350_000.0,
-            r2=1.0,
-            flux2=1_500.0,
+            radius=0.05,
+            flux=1_500.0,
             active=True,
         )
         with pytest.raises(ValueError):
@@ -326,6 +325,30 @@ class TestRadiationBallSource:
         # Both cover the beam; result should be the same element count (no duplication)
         result = run_analysis(model, [zone, ball], _make_config())
         assert result.n_elements == 1
+
+    def test_rad_ball_isection_web_blind_side_still_heats(self):
+        """
+        I-beam web is meshed with only ONE fixed local normal (see
+        section_mesh/CLAUDE.md), but §3.4.1 says both faces are physically
+        exposed. A ball positioned on the side the mesh's stored normal does
+        NOT point toward must still heat the element (double_sided fix in
+        _rad_ball_per_quad_flux) — before the fix this element received
+        exactly zero flux and never heated.
+        """
+        from fahts.core.heat.sources.rad_ball import RadiationBall
+        model = _make_model(section_type="isection")
+        # direction=(1,0,0), local_z=(0,0,1) → local_y points global -y, so the
+        # web's stored local normal (0,-1,0) transforms to global (0,+1,0).
+        # A ball at global -y is on the side that normal does NOT point toward.
+        ball = RadiationBall(
+            name="BlindSideBall",
+            center=np.array([0.5, -1.0, 0.0]),
+            radius=0.3,
+            flux=350_000.0,
+            active=True,
+        )
+        result = run_analysis(model, [ball], _make_config())
+        assert result.T_centroid[-1, 0] > result.T_centroid[0, 0]
 
 
 # ── Worker importability ──────────────────────────────────────────────────────

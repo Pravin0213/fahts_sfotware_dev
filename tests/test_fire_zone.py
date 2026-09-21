@@ -146,3 +146,43 @@ class TestFireZoneTemperature:
         )
         expected = curve.temperature(3600.0)
         assert zone.temperature(3600.0) == pytest.approx(expected)
+
+
+# ── effective_epsilon_fire (EN 1991-1-2 §3.3.2) ───────────────────────────────
+
+class TestEffectiveEpsilonFire:
+    """Gas emissivity must be 1.0 for ISO 834 and hydrocarbon environmental fires."""
+
+    def _zone(self, curve_type: FireCurveType, epsilon_fire: float = 0.5) -> FireZone:
+        return FireZone(
+            name="Z",
+            center=np.zeros(3),
+            dims=np.ones(3),
+            curve=FireCurve(curve_type),
+            epsilon_fire=epsilon_fire,
+        )
+
+    def test_iso_834_always_returns_1(self):
+        assert self._zone(FireCurveType.ISO_834, epsilon_fire=0.5).effective_epsilon_fire == 1.0
+
+    def test_iso_834_default_epsilon_unchanged(self):
+        # Default epsilon_fire=1.0 — effective should also be 1.0
+        zone = FireZone(
+            name="Z", center=np.zeros(3), dims=np.ones(3),
+            curve=FireCurve(FireCurveType.ISO_834),
+        )
+        assert zone.effective_epsilon_fire == 1.0
+
+    def test_hydrocarbon_always_returns_1(self):
+        assert self._zone(FireCurveType.HYDROCARBON, epsilon_fire=0.3).effective_epsilon_fire == 1.0
+
+    def test_user_defined_returns_custom_value(self):
+        zone = self._zone(FireCurveType.USER_DEFINED, epsilon_fire=0.6)
+        assert zone.effective_epsilon_fire == pytest.approx(0.6)
+
+    def test_user_defined_default_epsilon_1(self):
+        zone = FireZone(
+            name="Z", center=np.zeros(3), dims=np.ones(3),
+            curve=FireCurve(FireCurveType.USER_DEFINED),
+        )
+        assert zone.effective_epsilon_fire == pytest.approx(1.0)

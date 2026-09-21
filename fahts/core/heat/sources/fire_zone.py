@@ -3,6 +3,50 @@ Phase 2.1 + 2.2 — FireCurve and FireZone.
 
 FireCurve  : time-temperature relationship (ISO 834, hydrocarbon, user-defined).
 FireZone   : rectangular box heat source placed in 3-D global space.
+
+NOTE — KAMELEON / FIREINT interface (§3.5.6) is NOT implemented
+----------------------------------------------------------------
+The original FAHTS manual describes an interface (§3.5.6) to the KAMELEON/FIREINT
+external CFD fire-simulation programs.  That interface requires:
+
+1. **Input files from KAMELEON/FIREINT** — a spatial Eulerian grid containing
+   per-control-volume gas temperatures, gas velocities (u, v, w), and gas
+   absorption coefficients derived from CO₂, H₂O, and soot concentrations.
+   Files are time-stamped snapshots; the closest-in-time snapshot to the current
+   FAHTS step is selected.
+
+2. **Discrete Transfer Method (DTM) radiation** — rays are cast from each finite-
+   element surface quad into a hemisphere (nθ = 3·nAccur, nΦ = 4·nAccur).  Each
+   ray tracks radiation intensity through the CFD control volumes, accumulating
+   absorption and emission as it travels, and returns the net incident radiance
+   to the steel surface (Shah & Lockwood formulation).  This is wholly different
+   from the geometric view-factor approach used by FireZone.
+
+3. **CFD-based forced-convection coefficient** — h_c = N_u · K_l / L, where N_u
+   is the local Nusselt number derived from the Reynolds number (using the local
+   gas velocity magnitude from the CFD grid) and a fixed Prandtl number of 0.707,
+   K_l is the thermal conductivity of air, and L = 0.2 m is the characteristic
+   length.  No single h_conv value is used; the coefficient varies per element
+   and per time step.
+
+Why it is not implemented
+~~~~~~~~~~~~~~~~~~~~~~~~~
+* Requires a live or file-based coupling to KAMELEON or FIREINT — proprietary
+  1990s-era SINTEF CFD codes that are not open-source and are not available in
+  this Python reimplementation.
+* The DTM ray-casting solver is a non-trivial standalone radiation module.
+* The convection model depends on volumetric CFD velocity data that no other
+  FAHTS source type supplies.
+
+What to use instead
+~~~~~~~~~~~~~~~~~~~
+* For standard fire scenarios use FireZone with ISO_834 or HYDROCARBON curves.
+* For spatially varying prescribed flux use RadiationBall (§3.5.3), or the
+  ConcentratedSource (§3.5.4) / LineSource (§3.5.5) point/line sources.
+* If CFD-coupled analysis is needed in the future, a new source class (e.g.
+  ``KameleonFireSource``) should be created in this package, accepting a set of
+  KAMELEON/FIREINT field files and implementing the DTM radiation + Nusselt
+  convection described in §3.5.6.
 """
 from __future__ import annotations
 
@@ -106,6 +150,19 @@ class FireZone(HeatSource):
     active: bool = True
 
     # -- HeatSource interface --------------------------------------------------
+
+    @property
+    def effective_epsilon_fire(self) -> float:
+        """
+        Gas emissivity used in radiative heat transfer.
+
+        EN 1991-1-2 §3.3.2: for ISO 834 and hydrocarbon (environmental) fire
+        curves the flames are optically thick, so ε_fire = 1.0.  Only for
+        USER_DEFINED curves is the user-supplied epsilon_fire value respected.
+        """
+        if self.curve.curve_type in (FireCurveType.ISO_834, FireCurveType.HYDROCARBON):
+            return 1.0
+        return self.epsilon_fire
 
     def temperature(self, t: float) -> float:
         """Return fire gas temperature [°C] at time *t* [s]."""
