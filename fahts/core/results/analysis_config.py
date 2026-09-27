@@ -52,6 +52,26 @@ class AnalysisConfig:
         n_layers:   Number of FE layers through wall thickness.  Default 1.
         elem_size:  Target element size [m].  None = auto.
 
+    3-D solid solver (default path since 2026-09):
+        solver_dim:  "3d" (default) — Hex8 solid mesh per member (`SolidTransientSolver`),
+                     real wall thickness with ``n_layers_3d`` elements through it;
+                     "2d" — legacy axial × hoop surface-shell solver
+                     (`SurfaceTransientSolver`), wall thickness as a scalar.
+        linear_solver: "cg" (default — Jacobi-preconditioned conjugate gradient,
+                     warm-started, rtol 1e-10; falls back to spsolve if it does not
+                     converge; 2–4× faster than direct on the project models) or
+                     "direct" (sparse LU via spsolve).  Applies to the global system.
+        n_layers_3d: Hex8 layers through each wall / plate thickness in 3-D.  Default 2.
+        axial_aspect_3d: 3-D only — axial element length is limited to this multiple of
+                     the member's cross-section element size (default 2; 0 disables).
+                     Long members with few axial elements give very elongated thin-wall
+                     hexes, which violate the discrete maximum principle: a sharp lit /
+                     shadowed flux edge then produces unphysical hot/cold spots (found
+                     on model_t1.fem: −69 °C next to a 350 kW/m² fire ball).
+                     (Independent of the legacy ``n_layers`` used by TRISHELL.)
+        PIPE hoop count in 3-D: ``c_circ_3d = max(c_circ, 12)`` — a coarser polygon
+                     misrepresents the curved wall volume/area of a solid annulus.
+
     mass_matrix: "lumped" (default) or "consistent".
     analysis_mode: Selects between strict theory-manual conformance and faster
                 engineering approximations.  Valid values:
@@ -110,6 +130,22 @@ class AnalysisConfig:
     # Legacy / other sections
     n_layers: int = 1
     elem_size: float | None = None
+    # 3-D solid solver selection (see class docstring)
+    solver_dim: str = "3d"
+    linear_solver: str = "cg"
+    n_layers_3d: int = 2
+    # 3-D: axial element length ≤ axial_aspect_3d × cross-section element size (0 = off);
+    # n_length / n_length_i / n_length_p then act as MINIMUM axial counts.
+    axial_aspect_3d: float = 2.0
+    # 3-D conduction operator: "monotone" (two-point edge stencil, M-matrix) or
+    # "consistent" (Galerkin trilinear) — see SolidTransientSolver
+    conduction_3d: str = "monotone"
+    # 3-D radiation geometry: shielding of RadiationBall / point / line sources by any
+    # member surface, and surface-to-surface radiation exchange between members
+    shielding: bool = True
+    radiation_exchange: bool = True
+    rad_patch_size: float = 0.5          # exchange patch size [m]
+    rad_rays_per_patch: int = 256        # Monte Carlo rays per patch (view factors)
     mass_matrix: str = "lumped"
     analysis_mode: str = "engineering"
     material_standard: str = field(default_factory=lambda: MATERIAL_STANDARD)
@@ -210,6 +246,22 @@ class AnalysisConfig:
             raise ValueError(f"mesh_14 must be >= 1, got {self.mesh_14}")
         if self.n_layers < 1:
             raise ValueError(f"n_layers must be >= 1, got {self.n_layers}")
+        if self.solver_dim not in {"2d", "3d"}:
+            raise ValueError(f"solver_dim must be '2d' or '3d', got {self.solver_dim!r}")
+        if self.linear_solver not in {"direct", "cg"}:
+            raise ValueError(
+                f"linear_solver must be 'direct' or 'cg', got {self.linear_solver!r}"
+            )
+        if not 1 <= self.n_layers_3d <= 16:
+            raise ValueError(f"n_layers_3d must be in [1, 16], got {self.n_layers_3d}")
+        if self.rad_patch_size <= 0 or self.rad_rays_per_patch < 1:
+            raise ValueError("rad_patch_size must be > 0 and rad_rays_per_patch >= 1")
+        if self.conduction_3d not in {"monotone", "consistent"}:
+            raise ValueError(
+                f"conduction_3d must be 'monotone' or 'consistent', got {self.conduction_3d!r}"
+            )
+        if self.axial_aspect_3d < 0:
+            raise ValueError(f"axial_aspect_3d must be >= 0, got {self.axial_aspect_3d}")
         if self.elem_size is not None and self.elem_size <= 0:
             raise ValueError(f"elem_size must be positive, got {self.elem_size}")
         if self.mass_matrix not in {"lumped", "consistent"}:
@@ -258,6 +310,11 @@ class AnalysisConfig:
         import math
         return 1 + math.ceil(self.t_end / self.output_dt)
 
+    @property
+    def c_circ_3d(self) -> int:
+        """PIPE hoop element count used by the 3-D solid mesher (at least 12)."""
+        return max(self.c_circ, 12)
+
     def summary(self) -> str:
         """One-line human-readable description of the configuration."""
         dur_min = self.t_end / 60.0
@@ -271,5 +328,8 @@ class AnalysisConfig:
             f"PIPE(circ={self.c_circ},len={self.n_length_p})  "
             f"Shell(12={self.mesh_12},14={self.mesh_14})  "
             f"mass={self.mass_matrix}  "
-            f"elements={n_el}"
+            f"solver={self.solver_dim}"
+            + (f"(layers={self.n_layers_3d},{self.linear_solver})  "
+               if self.solver_dim == "3d" else f"({self.linear_solver})  ")
+            + f"elements={n_el}"
         )

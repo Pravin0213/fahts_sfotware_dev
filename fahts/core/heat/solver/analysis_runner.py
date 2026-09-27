@@ -19,6 +19,12 @@ surface-shell approach (SINTEF FAHTS §3.2.2):
   - Shell    → PlateSurfaceMesher    + SurfaceTransientSolver  (QUADSHEL only)
                ShellMesher           + Shell1DSolver           (TRISHELL fallback)
 
+3-D solid path (``config.solver_dim == "3d"``, default): every BOX / IHPROFIL / PIPE
+member and QUADSHEL plate is meshed with Hex8 bricks (``n_layers_3d`` through the wall)
+and solved by ``SolidTransientSolver``; boundary data are evaluated per FACE_OUTER face
+with true outward normals (see ``solid_integration.py``).  Members are coupled by safe
+node merging plus joint conductance links (``k_link``).  TRISHELL keeps the 1-D fallback.
+
 Supports heat sources:
   - FireZone          — rectangular zone with fire curve (ISO 834, HC, user-defined)
   - RadiationBall     — spherical source, exact point-to-sphere view factor:
@@ -31,7 +37,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Callable
@@ -40,6 +45,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
+from fahts.core.heat.bc.face_flux import TimeVaryingFaceFlux
 from fahts.core.heat.bc.view_factor import (
     element_quad_exposure_flags,
     exposed_element_ids,
@@ -51,6 +57,11 @@ from fahts.core.heat.section_mesh.iprofil_surface_mesher import IProfileSurfaceM
 from fahts.core.heat.section_mesh.pipe_surface_mesher import PipeSurfaceMesher
 from fahts.core.heat.section_mesh.plate_surface_mesher import PlateSurfaceMesher
 from fahts.core.heat.section_mesh.shell_mesh import ShellMesher
+from fahts.core.heat.solid_mesh import PlateSolidMesher, SolidMesh
+from fahts.core.heat.solver import solid_integration as _si
+from fahts.core.heat.solver.batch_assembly import SolidBatch, is_batchable
+from fahts.core.heat.solver.linear_solve import SPDSolver
+from fahts.core.heat.solver.solid_solver import SolidTransientSolver
 from fahts.core.heat.solver.surface_solver import SurfaceTransientSolver
 from fahts.core.heat.solver.shell_1d_solver import Shell1DSolver
 from fahts.core.heat.sources.concentrated_source import ConcentratedSource
@@ -82,6 +93,16 @@ _THERMAL_DENSITY_FALLBACK: float = 7850.0
 _USFOS_BENCHMARK_EMISSIVITY: float = 0.85
 
 
+class _NullPool:
+    """Stand-in for a ThreadPoolExecutor when running single-threaded."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
 class AnalysisCancelledError(Exception):
     """Raised by run_analysis when the cancel_check callback returns True."""
 
@@ -90,17 +111,31 @@ class GlobalThermalSolver:
     """
     Global thermal system for all exposed structural elements with co-located node merging.
 
-    Co-located surface-mesh nodes from different elements (within 1 mm in global space)
-    are merged into shared DOFs so heat flows between connected elements.  The assembled
-    K and M are sparse matrices in global DOF space; the system is no longer block-diagonal
-    when elements share DOFs at their junctions.
+    Co-located mesh nodes from different elements (within the merge tolerance in global
+    space) are merged into shared global DOFs so heat flows between connected elements.
+    The assembled K and M are sparse matrices in global DOF space.  An optional constant
+    joint-link conductance matrix ``k_link`` (3-D solid path — see
+    ``solid_integration.build_joint_links``) is added to K at every assembly.
 
     Crank-Nicolson (θ=1/2) incremental form:
         A = K_i + (2/Δt) · M_i
-        B = Q_i − K_prev · T_prev + M_prev · Ṫ_prev
-        ΔT = spsolve(A, B)
+        B = Q_i − K_i · T_prev + M_i · Ṫ_prev   (current Picard iterate)
+        ΔT = A⁻¹ B        (direct spsolve, or Jacobi-PCG when linear_solver="cg")
         T_new    = T_prev + ΔT
         Ṫ_new    = (2/Δt) · ΔT − Ṫ_prev
+
+    Element matrices are scattered as COO triplets (never densified), so members with
+    thousands of solid nodes assemble in O(nnz).
+
+    Linear solves: Jacobi-PCG by default with relative residual 1e-8 (≈1e-6 K solution
+    error on the 64k-DOF model_file.fem system — far below the 1e-6·T Picard tolerance;
+    1e-10 costs twice the iterations for no visible change).  ``linear_solver="direct"``
+    uses SuperLU.
+
+    Prescribed nodal temperatures (§3.5.2 ``PrescribedNodeBC`` held by the member
+    solvers in local node numbering) are mapped to global DOFs and enforced by
+    symmetric elimination: only the free block A_ff·ΔT_f = B_f − A_fp·ΔT_p is solved,
+    so A stays SPD (valid for CG) and pinned DOFs carry Ṫ = 0.
     """
 
     def __init__(
@@ -112,7 +147,15 @@ class GlobalThermalSolver:
         n_workers: int = 1,
         nonlinear_max_iter: int = 6,
         nonlinear_tol: float = 1e-6,
+        linear_solver: str = "direct",
+        k_link: sp.csr_matrix | None = None,
+        cg_rtol: float = 1e-8,
+        cg_maxiter: int | None = None,
+        batch: bool = True,
+        rad_exchange=None,
     ) -> None:
+        if linear_solver not in {"direct", "cg"}:
+            raise ValueError(f"linear_solver must be 'direct' or 'cg', got {linear_solver!r}")
         self._eids       = eids
         self._solvers    = solvers
         self._gdof_map   = gdof_map
@@ -120,10 +163,52 @@ class GlobalThermalSolver:
         self._n_workers  = max(1, n_workers)
         self._max_iter   = nonlinear_max_iter
         self._tol        = nonlinear_tol
+        self._linear     = linear_solver
+        self._cg_rtol    = float(cg_rtol)
+        self._cg_maxiter = cg_maxiter
+        if k_link is not None:
+            if k_link.shape != (n_global_dofs, n_global_dofs):
+                raise ValueError(
+                    f"k_link shape {k_link.shape} != ({n_global_dofs}, {n_global_dofs})"
+                )
+            k_link = sp.csr_matrix(k_link)
+        self._k_link = k_link
+        self._k_link_coo = k_link.tocoo() if k_link is not None else None
+        # concatenated local→global DOF map (member order) for bincount scatters
+        self._gd_concat = np.concatenate([np.asarray(gdof_map[e], dtype=np.intp) for e in eids])
+        self._gd_offsets = np.cumsum([0] + [len(gdof_map[e]) for e in eids])[:-1]
+        self._spd = SPDSolver(linear_solver, rtol=cg_rtol, maxiter=cg_maxiter)
+        # optional surface-to-surface radiation exchange (radiation/exchange.py)
+        self._rad_exchange = rad_exchange
+        # Batchable solid members are assembled together (SolidBatch); the rest one by one
+        batch_eids = [e for e in eids if is_batchable(solvers[e])] if batch else []
+        self._other_eids = [e for e in eids if e not in set(batch_eids)]
+        self._batch = (SolidBatch(batch_eids, solvers, gdof_map, n_global_dofs)
+                       if batch_eids else None)
+        self._gd_other = (np.concatenate([np.asarray(gdof_map[e], dtype=np.intp)
+                                          for e in self._other_eids])
+                          if self._other_eids else np.zeros(0, dtype=np.intp))
+        # raw fast path when every remaining member exposes assemble_raw/k_structure
+        self._raw = all(hasattr(solvers[e], "assemble_raw") and hasattr(solvers[e], "k_structure")
+                        for e in self._other_eids)
+
+        # Prescribed DOFs: [(global_dofs, PrescribedNodeBC)] — evaluated per step
+        self._presc: list[tuple[np.ndarray, object]] = []
+        for eid in eids:
+            for bc in getattr(solvers[eid], "_prescribed_bcs", None) or []:
+                local = np.asarray(bc.node_indices, dtype=np.intp)
+                self._presc.append((np.asarray(gdof_map[eid])[local], bc))
+        pinned = (np.unique(np.concatenate([d for d, _ in self._presc]))
+                  if self._presc else np.zeros(0, dtype=np.intp))
+        self._pinned = pinned
+        self._free = np.setdiff1d(np.arange(n_global_dofs), pinned)
 
         self._K_prev:     sp.csr_matrix | None = None
         self._M_prev:     sp.csr_matrix | None = None
         self._T_dot_prev: np.ndarray | None    = None
+        # Cached global sparsity pattern (rows/cols of the concatenated COO stream)
+        self._pat_key: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._pat:     dict[str, object] = {}
 
     @staticmethod
     def _to_sparse_K(K_e) -> sp.csr_matrix:
@@ -136,63 +221,199 @@ class GlobalThermalSolver:
         arr = np.asarray(M_e)
         return sp.diags(arr, format="csr") if arr.ndim == 1 else sp.csr_matrix(arr)
 
+    @staticmethod
+    def _coo_triplets(
+        A_e, gdofs: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Element matrix (sparse, dense 2-D or lumped 1-D) → global COO triplets."""
+        if sp.issparse(A_e) and A_e.format == "csr":
+            # Direct CSR expansion (avoids tocoo()'s canonical-format check)
+            rows = np.repeat(np.arange(A_e.shape[0]), np.diff(A_e.indptr))
+            return gdofs[rows], gdofs[A_e.indices], np.asarray(A_e.data, dtype=float)
+        if sp.issparse(A_e):
+            c = A_e.tocoo()
+            return gdofs[c.row], gdofs[c.col], np.asarray(c.data, dtype=float)
+        arr = np.asarray(A_e, dtype=float)
+        if arr.ndim == 1:
+            return gdofs, gdofs, arr
+        c = sp.coo_matrix(arr)
+        return gdofs[c.row], gdofs[c.col], np.asarray(c.data, dtype=float)
+
+    def _build(
+        self, name: str, rows: np.ndarray, cols: np.ndarray, vals: np.ndarray
+    ) -> sp.csr_matrix:
+        """COO → CSR, reusing a cached pattern when the triplet layout is unchanged."""
+        from fahts.core.heat.solver.solid_solver import _CSRPattern
+
+        key = self._pat_key.get(name)
+        if (key is None or len(key[0]) != len(rows)
+                or not np.array_equal(key[0], rows) or not np.array_equal(key[1], cols)):
+            self._pat_key[name] = (rows, cols)
+            self._pat[name] = _CSRPattern(rows, cols, self._n_total)
+        return self._pat[name].build(vals)  # type: ignore[attr-defined]
+
     def _assemble_global(
         self, T_global: np.ndarray, t: float, pool
     ) -> tuple[sp.csr_matrix, sp.csr_matrix, np.ndarray]:
-        """Parallel element assembly → global K, M and Q via DOF-map scatter.
+        """Global K, M and Q from all members via the global DOF map.
 
-        Co-located nodes that share a global DOF accumulate contributions from
-        all attached elements, producing off-diagonal coupling between elements.
+        Co-located nodes that share a global DOF accumulate contributions from all
+        attached elements, producing off-diagonal coupling between elements.
+
+        Batchable solid members (lumped mass, no insulation) are assembled together by
+        ``SolidBatch`` in a few vectorised operations; all other members are assembled
+        one by one.  The global CSR pattern (batch block + other members + joint links)
+        is built once; each assembly is then a single ``bincount`` scatter.
         """
-        n     = self._n_total
-        Q_out = np.zeros(n)
-
-        K_gi:  list[np.ndarray] = []
-        K_gj:  list[np.ndarray] = []
-        K_val: list[np.ndarray] = []
-        M_gi:  list[np.ndarray] = []
-        M_gj:  list[np.ndarray] = []
-        M_val: list[np.ndarray] = []
+        n = self._n_total
+        raw = self._raw
 
         def _one(eid: int):
             gdofs = self._gdof_map[eid]
-            K_e, M_e, Q_e = self._solvers[eid]._assemble_step(T_global[gdofs], t)
-            return eid, gdofs, K_e, M_e, Q_e
+            sv = self._solvers[eid]
+            return (sv.assemble_raw(T_global[gdofs], t) if raw
+                    else sv._assemble_step(T_global[gdofs], t))
 
-        futures = [pool.submit(_one, eid) for eid in self._eids]
-        for fut in futures:
-            eid, gdofs, K_e, M_e, Q_e = fut.result()
-            n_e = len(gdofs)
-            gi  = np.repeat(gdofs, n_e)
-            gj  = np.tile(gdofs, n_e)
+        if pool is None or self._n_workers == 1:
+            parts = [_one(eid) for eid in self._other_eids]
+        else:
+            parts = list(pool.map(_one, self._other_eids))
+        Ks = [p[0] for p in parts]
+        Ms = [p[1] for p in parts]
 
-            K_arr = K_e.toarray() if sp.issparse(K_e) else np.asarray(K_e)
-            K_gi.append(gi);  K_gj.append(gj);  K_val.append(K_arr.ravel())
+        # ── K ────────────────────────────────────────────────────────────────
+        if not raw:
+            sig = self._structure_signature(Ks)
+            if sig is None or sig != self._pat_key.get("K_sig"):
+                self._pat.pop("K", None)
+                self._pat_key["K_sig"] = sig if sig is not None else ()
+                if sig is None:
+                    Ks = [self._to_sparse_K(K) for K in Ks]
+            vals = [K.data for K in Ks]
+        else:
+            vals = list(Ks)
+        if "K" not in self._pat:
+            self._build_K_pattern_all(Ks if not raw else None)
+        pat = self._pat["K"]
+        K_data = self._K_const.copy()                   # joint links (constant)
+        if vals:
+            K_data += np.bincount(self._inv_other, weights=np.concatenate(vals),
+                                  minlength=len(K_data))
+        if self._batch is not None:
+            Kb, Mb, Qb = self._batch.assemble(T_global, t)
+            K_data += Kb
+        K_global = pat.wrap(K_data)
 
-            M_arr = np.asarray(M_e) if not sp.issparse(M_e) else None
-            if M_arr is not None and M_arr.ndim == 1:
-                # Lumped mass: only diagonal entries
-                M_gi.append(gdofs);  M_gj.append(gdofs);  M_val.append(M_arr)
-            else:
-                M_dense = M_e.toarray() if sp.issparse(M_e) else np.asarray(M_e)
-                M_gi.append(gi);  M_gj.append(gj);  M_val.append(M_dense.ravel())
+        # ── Q ────────────────────────────────────────────────────────────────
+        Q_out = (Qb.copy() if self._batch is not None else np.zeros(n))
+        if parts:
+            Q_out += np.bincount(self._gd_other, weights=np.concatenate([p[2] for p in parts]),
+                                 minlength=n)
 
-            np.add.at(Q_out, gdofs, Q_e)
+        if self._rad_exchange is not None:
+            Q_out += self._rad_exchange.load(T_global, t)
 
-        K_global = sp.csr_matrix(
-            (np.concatenate(K_val), (np.concatenate(K_gi), np.concatenate(K_gj))),
-            shape=(n, n),
-        )
-        M_global = sp.csr_matrix(
-            (np.concatenate(M_val), (np.concatenate(M_gi), np.concatenate(M_gj))),
-            shape=(n, n),
-        )
+        # ── M: lumped (1-D) → diagonal; any consistent member → triplet scatter ─
+        diag = Mb.copy() if self._batch is not None else np.zeros(n)
+        if all(not sp.issparse(M) and np.asarray(M).ndim == 1 for M in Ms):
+            if Ms:
+                diag += np.bincount(self._gd_other, weights=np.concatenate(Ms), minlength=n)
+            M_global = sp.diags(diag, format="csr")
+        else:
+            M_gi, M_gj, M_val = zip(*(self._coo_triplets(M_e, self._gdof_map[eid])
+                                      for eid, M_e in zip(self._other_eids, Ms)))
+            M_global = (self._build("M", np.concatenate(M_gi), np.concatenate(M_gj),
+                                    np.concatenate(M_val))
+                        + sp.diags(diag, format="csr")).tocsr()
         return K_global, M_global, Q_out
 
+    def _build_K_pattern_all(self, Ks: list | None) -> None:
+        """Global K pattern: batch block, other members (raw structure or CSR), links."""
+        from fahts.core.heat.solver.solid_solver import _CSRPattern
+
+        gi, gj = [], []
+        if self._batch is not None:
+            bi, bj = self._batch.k_coo()
+            gi.append(bi)
+            gj.append(bj)
+        for k, eid in enumerate(self._other_eids):
+            gd = np.asarray(self._gdof_map[eid], dtype=np.intp)
+            if Ks is None:
+                indptr, indices = self._solvers[eid].k_structure()
+                gi.append(gd[np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))])
+                gj.append(gd[indices])
+            else:
+                ki, kj, _ = self._coo_triplets(Ks[k], gd)
+                gi.append(ki)
+                gj.append(kj)
+        if self._k_link is not None:
+            gi.append(self._k_link_coo.row)
+            gj.append(self._k_link_coo.col)
+        pat = _CSRPattern(np.concatenate(gi), np.concatenate(gj), self._n_total)
+        self._pat["K"] = pat
+        # split the pattern's inverse map: [batch | other members | joint links]
+        inv = pat._inv
+        n_b = len(self._batch.k_coo()[0]) if self._batch is not None else 0
+        n_l = len(self._k_link_coo.data) if self._k_link is not None else 0
+        nnz = pat._nnz
+        if self._batch is not None:
+            self._batch.bind(inv[:n_b], nnz)
+        self._inv_other = inv[n_b:len(inv) - n_l]
+        self._K_const = (np.bincount(inv[len(inv) - n_l:], weights=self._k_link_coo.data,
+                                     minlength=nnz) if n_l else np.zeros(nnz))
+
+    @staticmethod
+    def _structure_signature(Ks: list) -> tuple | None:
+        """Cheap identity of the member K structures (None → not all CSR)."""
+        if not all(sp.issparse(K) and K.format == "csr" for K in Ks):
+            return None
+        return tuple(K.nnz for K in Ks)
+
+    def _solve(self, A: sp.csr_matrix, b: np.ndarray, x0: np.ndarray | None) -> np.ndarray:
+        """Solve A x = b with the configured linear solver (A is SPD for CN)."""
+        return self._spd.solve(A, b, x0)
+
+    @property
+    def cg_fallbacks(self) -> int:
+        """Number of CG solves that fell back to the direct solver."""
+        return self._spd.fallbacks
+
+    def prescribed_values(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        """(global_dofs, temperatures) of all prescribed DOFs at time *t*.
+
+        When several BCs pin the same DOF (e.g. a merged joint node) the last wins.
+        """
+        if not self._presc:
+            return np.zeros(0, dtype=np.intp), np.zeros(0)
+        dofs = np.concatenate([d for d, _ in self._presc])
+        vals = np.concatenate([np.full(len(d), float(bc.eval(t))) for d, bc in self._presc])
+        return dofs, vals
+
+    def apply_prescribed(self, T_global: np.ndarray, t: float) -> None:
+        """Overwrite prescribed DOFs of *T_global* in place with their values at *t*."""
+        dofs, vals = self.prescribed_values(t)
+        T_global[dofs] = vals
+
+    def _solve_constrained(
+        self, A: sp.csr_matrix, b: np.ndarray, dT_p: np.ndarray, x0: np.ndarray | None
+    ) -> np.ndarray:
+        """Solve A·x = b with x[pinned] = dT_p by symmetric elimination."""
+        return self._spd.solve_constrained(A, b, self._free, self._pinned, dT_p, x0)
+
     def _init_rate(self, T_global: np.ndarray, pool) -> None:
-        """Compute initial CN rate: Ṫ0 = M0⁻¹ · (Q0 − K0 · T0)."""
+        """Compute initial CN rate: Ṫ0 = M0⁻¹ · (Q0 − K0 · T0); pinned DOFs get Ṫ = 0."""
         K0, M0, Q0       = self._assemble_global(T_global, 0.0, pool)
-        self._T_dot_prev = spla.spsolve(M0, Q0 - K0 @ T_global)
+        rhs = Q0 - K0 @ T_global
+        n0 = M0.shape[0]
+        f = self._free
+        T_dot = np.zeros(n0)
+        if (M0.nnz == n0 and np.array_equal(M0.indptr, np.arange(n0 + 1))
+                and np.array_equal(M0.indices, np.arange(n0))):
+            T_dot[f] = rhs[f] / M0.diagonal()[f]        # diagonal (lumped) mass
+        else:
+            # Free block only: consistent-mass coupling must not leak pinned-row residuals
+            T_dot[f] = spla.spsolve(M0.tocsr()[f][:, f].tocsc(), rhs[f])
+        self._T_dot_prev = T_dot
         self._K_prev     = K0
         self._M_prev     = M0
 
@@ -204,7 +425,8 @@ class GlobalThermalSolver:
         """
         two_over_dt = 2.0 / dt
 
-        with ThreadPoolExecutor(max_workers=self._n_workers) as pool:
+        with ThreadPoolExecutor(max_workers=self._n_workers) if self._n_workers > 1 \
+                else _NullPool() as pool:
             if self._K_prev is None:
                 self._init_rate(T_global, pool)
 
@@ -212,35 +434,46 @@ class GlobalThermalSolver:
             assert self._M_prev is not None
             assert self._T_dot_prev is not None
 
+            p_dofs, p_vals = self.prescribed_values(t)
+            dT_p = np.zeros(len(self._pinned))
+            if len(p_dofs):
+                target = T_global.copy()
+                target[p_dofs] = p_vals
+                dT_p = target[self._pinned] - T_global[self._pinned]
+
             T_iter = T_global + dt * self._T_dot_prev
+            T_iter[self._pinned] = T_global[self._pinned] + dT_p
             dT: np.ndarray | None = None
+            K_i = M_i = None
 
             for _ in range(self._max_iter):
                 K_i, M_i, Q_i = self._assemble_global(T_iter, t, pool)
-                A  = K_i + two_over_dt * M_i
-                B  = (Q_i - self._K_prev @ T_global
-                      + self._M_prev @ self._T_dot_prev)
-                dT    = spla.spsolve(A, B)
+                A  = (K_i + two_over_dt * M_i).tocsr()
+                # Current-iterate matrices on the history side keep CN 2nd-order when
+                # k(T)/c(T) vary (K_prev/M_prev here degraded it to 1st order).
+                B  = (Q_i - K_i @ T_global
+                      + M_i @ self._T_dot_prev)
+                x0 = dT if dT is not None else dt * self._T_dot_prev
+                dT    = self._solve_constrained(A, B, dT_p, x0)
                 T_new = T_global + dT
-                # Per-element convergence check via global DOF map
-                all_conv = all(
-                    float(np.max(np.abs(T_new[gdofs] - T_iter[gdofs])))
-                    <= self._tol * max(1.0, float(np.max(np.abs(T_new[gdofs]))))
-                    for eid in self._eids
-                    for gdofs in [self._gdof_map[eid]]
-                )
-                if all_conv:
+                # Per-element convergence check (vectorised over the global DOF map):
+                # max|ΔT_e| ≤ tol · max(1, max|T_e|) for every element e
+                g = self._gd_concat
+                d_e = np.maximum.reduceat(np.abs(T_new[g] - T_iter[g]), self._gd_offsets)
+                s_e = np.maximum.reduceat(np.abs(T_new[g]), self._gd_offsets)
+                if np.all(d_e <= self._tol * np.maximum(1.0, s_e)):
                     break
                 T_iter = T_new
 
             assert dT is not None
             T_new     = T_global + dT
             T_dot_new = two_over_dt * dT - self._T_dot_prev
+            T_dot_new[self._pinned] = 0.0
 
-            K_fin, M_fin, _ = self._assemble_global(T_new, t, pool)
-
-        self._K_prev     = K_fin
-        self._M_prev     = M_fin
+        # K_prev/M_prev only mark the CN state as initialised (the history terms use
+        # the current iterate), so no extra end-of-step reassembly is needed.
+        self._K_prev     = K_i
+        self._M_prev     = M_i
         self._T_dot_prev = T_dot_new
 
         return T_new
@@ -319,6 +552,11 @@ def run_analysis(
     active_csrcs   = [s for s in active_sources if isinstance(s, ConcentratedSource)]
     active_lsrcs   = [s for s in active_sources if isinstance(s, LineSource)]
 
+    use_3d = config.solver_dim == "3d"
+    if use_3d:
+        log.info("3-D solid solver: Hex8, %d layer(s) through thickness, %s linear solver.",
+                 config.n_layers_3d, config.linear_solver)
+
     # ── Determine exposed elements ────────────────────────────────────────────
     if config.element_ids:
         beam_eids  = [e for e in config.element_ids if e in model.elements]
@@ -330,6 +568,9 @@ def run_analysis(
         shell_eids = sorted(
             _exposed_shell_ids(model, active_zones, active_balls, active_csrcs, active_lsrcs)
         )
+
+    # model topology: free member ends / free plate edges are exposed in 3-D
+    topo = _model_topology(model)
 
     # ── Build beam solvers ────────────────────────────────────────────────────
     solvers:       dict[int, object]         = {}
@@ -372,6 +613,21 @@ def run_analysis(
 
         if fire_temp is None:
             log.warning("Element %d: no active source covers midpoint — skipped.", eid)
+            continue
+
+        if use_3d:
+            built = _build_solid_beam_solver(
+                eid, elem, sec, mat, model, config, fire_temp, epsilon_m, h_conv, q_fn,
+                covering_zones, ref_zone, covering_ball, active_zones, active_csrcs,
+                active_lsrcs, effective_mass_matrix, topo=topo,
+            )
+            if built is None:
+                continue
+            solvers[eid], meshes[eid] = built
+            T_states[eid]      = np.full(meshes[eid].n_nodes, 20.0)
+            sec_type_name[eid] = type(sec).__name__
+            is_surface[eid]    = True
+            valid_beam_eids.append(eid)
             continue
 
         mesh = _build_beam_surface_mesh(sec, elem.length, config)
@@ -428,33 +684,24 @@ def run_analysis(
         # (RadiationBall uses a uniform prescribed q_fn; the concentrated source's per-quad
         # cos(θ) contribution would be double-counting in that case.)
         # FireZone + ConcentratedSource can coexist: the CS flux is added via q_per_quad.
-        csrc_ball_active = covering_ball is not None
-        if active_csrcs and not csrc_ball_active:
-            q_csrc = _concentrated_source_per_quad_flux(
-                active_csrcs, mesh, elem, model.nodes, double_sided=double_sided
-            )
-            if np.any(q_csrc > 0.0):
-                q_per_quad = q_csrc if q_per_quad is None else q_per_quad + q_csrc
-            elif q_per_quad is None and not covering_zones:
-                # No face receives flux and no other heat source — element not exposed
-                log.debug(
-                    "Element %d: concentrated source flux zero for all faces — skipped.", eid
-                )
-                continue
-
-        # §3.5.5 LineSource per-face directional flux: n sub-sources summed as §3.5.4.
-        # Coexists with FireZone and ConcentratedSource; skipped when RadiationBall
-        # prescribes uniform flux (same double-counting guard as ConcentratedSource).
-        if active_lsrcs and not csrc_ball_active:
-            q_lsrc = _line_source_per_quad_flux(
-                active_lsrcs, mesh, elem, model.nodes, double_sided=double_sided
-            )
-            if np.any(q_lsrc > 0.0):
-                q_per_quad = q_lsrc if q_per_quad is None else q_per_quad + q_lsrc
-            elif q_per_quad is None and not covering_zones:
-                log.debug(
-                    "Element %d: line source flux zero for all faces — skipped.", eid
-                )
+        # §3.5.4/§3.5.5 point & line sources — flux ∝ E(t), so each source is stored as
+        # E_s(t) × unit-power pattern and re-evaluated every step (TimeVaryingFaceFlux).
+        # Skipped when a RadiationBall covers the element (double-counting guard).
+        # An element is kept when any face CAN be lit (pattern > 0), even if E(0) = 0.
+        q_dir: np.ndarray | TimeVaryingFaceFlux | None = q_per_quad
+        if (active_csrcs or active_lsrcs) and covering_ball is None:
+            sched = TimeVaryingFaceFlux(mesh.n_quads)
+            for src in active_csrcs:
+                sched.add_source(src, lambda u: _concentrated_source_per_quad_flux(
+                    [u], mesh, elem, model.nodes, double_sided=double_sided))
+            for src in active_lsrcs:
+                sched.add_source(src, lambda u: _line_source_per_quad_flux(
+                    [u], mesh, elem, model.nodes, double_sided=double_sided))
+            if sched.lit:
+                q_dir = sched
+            elif not covering_zones:
+                log.debug("Element %d: point/line source flux zero on all faces — skipped.",
+                          eid)
                 continue
 
         M_extra = _compute_M_extra(sec, mesh, elem.length)
@@ -462,7 +709,7 @@ def run_analysis(
             mesh=mesh, material=mat, fire_temp=fire_temp,
             epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
             epsilon_steel=eps_s, epsilon_fire=eps_f, view_factors=vf,
-            q_per_quad=q_per_quad, quad_exposure=quad_exposure,
+            q_per_quad=q_dir, quad_exposure=quad_exposure,
             M_extra=M_extra, mass_matrix=effective_mass_matrix,
             insulation=config.insulation,
             prescribed_node_bcs=config.prescribed_node_bcs or None,
@@ -516,7 +763,19 @@ def run_analysis(
             h_conv     = 0.0
             q_fn       = lambda t: 0.0    # noqa: E731
 
-        if len(shell.nodes) == 4:
+        if len(shell.nodes) == 4 and use_3d:
+            corners = np.array([model.nodes[nid].xyz for nid in shell.nodes], dtype=float)
+            built_sh = _build_solid_plate_solver(
+                eid, sec, mat, corners, config, fire_temp, epsilon_m, h_conv, q_fn,
+                shell_covering_ball, active_csrcs, active_lsrcs, effective_mass_matrix,
+                topo=topo, shell_nodes=tuple(shell.nodes),
+            )
+            if built_sh is None:
+                continue
+            solver, mesh = built_sh
+            is_surf = True
+            stype   = "QUADSHEL"
+        elif len(shell.nodes) == 4:
             corners = np.array([model.nodes[nid].xyz for nid in shell.nodes])
             mesh    = PlateSurfaceMesher(
                 section=sec, corners=corners,
@@ -554,29 +813,15 @@ def run_analysis(
                 ])
                 # All quads share the same flat-plate normal
                 quad_normals = np.tile(sn, (mesh.n_quads, 1))
-                if active_csrcs:
-                    q_csrc_sh = np.zeros(mesh.n_quads)
-                    for csrc in active_csrcs:
-                        q_pos = csrc.per_quad_flux(quad_centroids, quad_normals)
-                        q_neg = csrc.per_quad_flux(quad_centroids, -quad_normals)
-                        q_csrc_sh += np.maximum(q_pos, q_neg)
-                    if np.any(q_csrc_sh > 0.0):
-                        q_per_quad_sh = (
-                            q_csrc_sh if q_per_quad_sh is None
-                            else q_per_quad_sh + q_csrc_sh
-                        )
-                # §3.5.5 LineSource per-quad flux for QUADSHEL
-                if active_lsrcs:
-                    q_lsrc_sh = np.zeros(mesh.n_quads)
-                    for lsrc in active_lsrcs:
-                        q_pos = lsrc.per_quad_flux(quad_centroids, quad_normals)
-                        q_neg = lsrc.per_quad_flux(quad_centroids, -quad_normals)
-                        q_lsrc_sh += np.maximum(q_pos, q_neg)
-                    if np.any(q_lsrc_sh > 0.0):
-                        q_per_quad_sh = (
-                            q_lsrc_sh if q_per_quad_sh is None
-                            else q_per_quad_sh + q_lsrc_sh
-                        )
+                # Flux ∝ E(t): store unit-power patterns (max of both plate sides, per
+                # source) and re-evaluate every step via TimeVaryingFaceFlux.
+                sched_sh = TimeVaryingFaceFlux(mesh.n_quads, static=q_per_quad_sh)
+                for src in list(active_csrcs) + list(active_lsrcs):
+                    sched_sh.add_source(src, lambda u: np.maximum(
+                        u.per_quad_flux(quad_centroids, quad_normals),
+                        u.per_quad_flux(quad_centroids, -quad_normals)))
+                if sched_sh.terms:
+                    q_per_quad_sh = sched_sh
             # RadiationBall re-radiation emissivity override for benchmark mode.
             eps_s_sh = (
                 _USFOS_BENCHMARK_EMISSIVITY
@@ -637,9 +882,24 @@ def run_analysis(
     out_T:     dict[int, list[np.ndarray]]   = {eid: [T_states[eid].copy()] for eid in all_eids}
 
     # ── Build global DOF map (co-located node merging at 1 mm tolerance) ─────
-    n_workers = min(total, os.cpu_count() or 4) if total > 1 else 1
+    # Single-threaded member assembly: per-member work is small numpy calls that hold
+    # the GIL, so a thread pool was measured ~30 % SLOWER (model_file.fem, 2026-09-27).
+    n_workers = 1
     _gpos     = _compute_global_node_positions(all_eids, meshes, model, is_surface)
-    gdof_map, n_global = _build_global_dof_map(all_eids, meshes, _gpos, tol=1e-3, model=model)
+    k_link: sp.csr_matrix | None = None
+    rad_exchange = None
+    if use_3d:
+        # Safe proximity merge (never collapses a member) + joint conductance links
+        gdof_map, n_global = _si.build_solid_dof_map(all_eids, meshes, _gpos, tol=1e-3)
+        k_link = _si.build_joint_links(all_eids, meshes, _gpos, gdof_map, n_global, model)
+        if config.shielding or config.radiation_exchange:
+            rad_exchange = _setup_radiation_geometry(
+                all_eids, meshes, _gpos, solvers, gdof_map, n_global, config, log_cb
+            )
+    else:
+        gdof_map, n_global = _build_global_dof_map(
+            all_eids, meshes, _gpos, tol=1e-3, model=model
+        )
     n_raw    = sum(meshes[eid].n_nodes for eid in all_eids)
     n_merged = n_raw - n_global
     if n_merged > 0:
@@ -648,13 +908,20 @@ def run_analysis(
             n_merged, n_global, n_raw,
         )
     global_solver = GlobalThermalSolver(
+        rad_exchange=rad_exchange,
         eids=all_eids,
         solvers=solvers,
         gdof_map=gdof_map,
         n_global_dofs=n_global,
         n_workers=n_workers,
+        linear_solver=config.linear_solver,
+        k_link=k_link,
     )
     T_global = np.full(n_global, 20.0)
+    global_solver.apply_prescribed(T_global, 0.0)
+    for eid in all_eids:
+        T_states[eid] = T_global[global_solver.gdof_map[eid]]
+        out_T[eid][0] = T_states[eid].copy()
 
     # ── Time-step outer loop ──────────────────────────────────────────────────
     t        = 0.0
@@ -711,10 +978,16 @@ def run_analysis(
             origin = origin + np.asarray(elem.ecc1, dtype=float)
         mesh_e = meshes[eid]
         nodes_global = origin + (R_beam @ mesh_e.nodes.T).T   # beam-local → global
-        tf     = TemperatureField.from_surface_solver_run(
-            eid=eid, times=times_arr, T_history=T_hist, mesh=mesh_e,
-            nodes_global=nodes_global,
-        )
+        if isinstance(mesh_e, SolidMesh):
+            tf = TemperatureField.from_solid_solver_run(
+                eid=eid, times=times_arr, T_history=T_hist, mesh=mesh_e,
+                nodes_global=nodes_global,
+            )
+        else:
+            tf = TemperatureField.from_surface_solver_run(
+                eid=eid, times=times_arr, T_history=T_hist, mesh=mesh_e,
+                nodes_global=nodes_global,
+            )
         fields.append(tf)
         t_peak = tf.peak_centroid_temperature(eid)
         log.info("Beam %d (%s) solved: T_peak=%.1f °C", eid, sec_type_name[eid], t_peak)
@@ -724,7 +997,13 @@ def run_analysis(
     for eid in valid_shell_eids:
         T_hist = np.array(out_T[eid])
         mesh   = meshes[eid]
-        if is_surface[eid]:
+        if isinstance(mesh, SolidMesh):
+            # PlateSolidMesher nodes are global
+            tf = TemperatureField.from_solid_solver_run(
+                eid=eid, times=times_arr, T_history=T_hist, mesh=mesh,
+                nodes_global=np.asarray(mesh.nodes, dtype=float).copy(),
+            )
+        elif is_surface[eid]:
             # PlateSurfaceMesher nodes are built from global corner coords → already global
             tf = TemperatureField.from_surface_solver_run(
                 eid=eid, times=times_arr, T_history=T_hist, mesh=mesh,
@@ -752,6 +1031,198 @@ def run_analysis(
         _log_summary(log_cb, merged)
 
     return merged
+
+
+# ── 3-D solid solver construction ─────────────────────────────────────────────
+
+def _solid_eps_rerad(config: AnalysisConfig, covering_ball) -> float | None:
+    """Re-radiation emissivity override for the RadiationBall path (benchmark mode)."""
+    if config.usfos_benchmark_mode and covering_ball is not None:
+        return _USFOS_BENCHMARK_EMISSIVITY
+    return None
+
+
+def _model_topology(model: FEMModel) -> tuple[dict[int, int], dict[frozenset, int]]:
+    """
+    (node use count, edge use count) over all beams and shells.  A beam counts as the
+    edge between its two nodes, so a plate edge running along a beam is not "free".
+    """
+    node_use: dict[int, int] = {}
+    edge_use: dict[frozenset, int] = {}
+    for el in model.elements.values():
+        for n in (el.n1, el.n2):
+            node_use[n] = node_use.get(n, 0) + 1
+        k = frozenset((el.n1, el.n2))
+        edge_use[k] = edge_use.get(k, 0) + 1
+    for sh in getattr(model, "shell_elements", {}).values():
+        ns = list(sh.nodes)
+        for n in ns:
+            node_use[n] = node_use.get(n, 0) + 1
+        for a, b in zip(ns, ns[1:] + ns[:1]):
+            k = frozenset((a, b))
+            edge_use[k] = edge_use.get(k, 0) + 1
+    return node_use, edge_use
+
+
+def _expose_free_beam_ends(mesh: SolidMesh, elem, node_use: dict[int, int]) -> None:
+    """End caps at member ends connected to nothing else → FACE_OUTER (in place)."""
+    from fahts.core.heat.solid_mesh import FACE_END, FACE_OUTER
+
+    fe = mesh.face_indices(FACE_END)
+    if len(fe) == 0:
+        return
+    x = np.asarray(mesh.nodes, dtype=float)[np.asarray(mesh.faces)[fe], 0]    # (n_fe, 4)
+    tol = 1e-9 * max(1.0, elem.length)
+    for nid, x_end in ((elem.n1, 0.0), (elem.n2, elem.length)):
+        if node_use.get(nid, 0) <= 1:
+            sel = fe[np.all(np.abs(x - x_end) <= tol, axis=1)]
+            mesh.face_group[sel] = FACE_OUTER
+    mesh._cache.clear()
+
+
+def _build_solid_beam_solver(
+    eid: int,
+    elem,
+    sec,
+    mat,
+    model: FEMModel,
+    config: AnalysisConfig,
+    fire_temp,
+    epsilon_m: float,
+    h_conv: float,
+    q_fn,
+    covering_zones: list,
+    ref_zone,
+    covering_ball,
+    active_zones: list,
+    active_csrcs: list,
+    active_lsrcs: list,
+    mass_matrix: str,
+    topo: tuple | None = None,
+) -> tuple[SolidTransientSolver, SolidMesh] | None:
+    """
+    Build the Hex8 SolidMesh + SolidTransientSolver of one beam member (3-D path).
+
+    Per-face boundary data are evaluated on FACE_OUTER faces in GLOBAL coordinates
+    (R = _beam_local_to_global(elem), origin = n1 + ecc1).  Every outer face has a
+    true outward normal, so I-profile flanges/web are exposed on both faces without
+    any double-sided correction.  Returns None when the member receives no heat
+    (same skip rules as the 2-D path).
+    """
+    mesh = _si.build_beam_solid_mesh(sec, elem.length, config)
+    if topo is not None:
+        # free member ends (connected to nothing) expose their end caps to the fire
+        _expose_free_beam_ends(mesh, elem, topo[0])
+    R = _beam_local_to_global(elem)
+    origin = np.asarray(model.nodes[elem.n1].xyz, dtype=float).copy()
+    if elem.ecc1 is not None:
+        origin = origin + np.asarray(elem.ecc1, dtype=float)
+    corners, cents, normals = _si.outer_face_geometry(mesh, R, origin)
+
+    face_exposure: np.ndarray | None = None
+    if covering_zones and active_zones:
+        flags = _si.zone_face_exposure(cents, active_zones)
+        if not np.any(flags > 0.0):
+            log.debug("Element %d: zone covers endpoint/midpoint but no faces — skipped.", eid)
+            return None
+        if not np.all(flags == 1.0):
+            face_exposure = flags
+
+    vf = eps_s = eps_f = None
+    if covering_zones:
+        vf    = _si.face_view_factors(corners, normals, covering_zones)
+        eps_s = 0.7
+        eps_f = ref_zone.effective_epsilon_fire
+    else:
+        eps_s = _solid_eps_rerad(config, covering_ball)
+
+    q_face: np.ndarray | None = None
+    if covering_ball is not None:
+        q_face = _si.ball_face_flux(covering_ball, cents, normals)
+        # In 3-D an element with no DIRECT flux is kept: it is heated by conduction from
+        # connected lit elements and by radiation exchange (the 2-D solver skipped it).
+    q_dir: np.ndarray | TimeVaryingFaceFlux | None = q_face
+    if covering_ball is None and (active_csrcs or active_lsrcs):
+        # Flux ∝ E(t): unit-power pattern per source, re-evaluated each step.
+        sched = TimeVaryingFaceFlux(len(cents))
+        for src in list(active_csrcs) + list(active_lsrcs):
+            sched.add_source(src, lambda u: u.per_quad_flux(cents, normals))
+        if sched.lit:
+            q_dir = sched
+        # (no skip when unlit — see the RadiationBall note above)
+
+    M_extra = _si.solid_M_extra(sec, mesh, elem.length, config.enclosed_gas_rho_c)
+    solver = SolidTransientSolver(
+        mesh=mesh, material=mat, fire_temp=fire_temp,
+        epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
+        epsilon_steel=eps_s, epsilon_fire=eps_f, view_factors=vf,
+        q_per_face=q_dir, face_exposure=face_exposure,
+        M_extra=M_extra, mass_matrix=mass_matrix,
+        insulation=config.insulation,
+        prescribed_node_bcs=config.prescribed_node_bcs or None,
+        conduction=config.conduction_3d,
+    )
+    solver._shield_ball = covering_ball          # for source shielding (radiation/)
+    return solver, mesh
+
+
+def _build_solid_plate_solver(
+    eid: int,
+    sec: PlateSection,
+    mat,
+    corners: np.ndarray,
+    config: AnalysisConfig,
+    fire_temp,
+    epsilon_m: float,
+    h_conv: float,
+    q_fn,
+    covering_ball,
+    active_csrcs: list,
+    active_lsrcs: list,
+    mass_matrix: str,
+    topo: tuple | None = None,
+    shell_nodes: tuple | None = None,
+) -> tuple[SolidTransientSolver, SolidMesh] | None:
+    """
+    Build the Hex8 PlateSolidMesher mesh + solver of one QUADSHEL (3-D path).
+
+    Both plate faces are FACE_OUTER with true opposite normals, so a fire zone heats
+    both sides and a directional source lights only the side facing it.
+    """
+    exposed = (False, False, False, False)
+    if topo is not None and shell_nodes is not None:
+        # free plate edges (not shared with another shell or a beam) are exposed:
+        # their thickness faces receive fire / source heat
+        ns = list(shell_nodes)
+        exposed = tuple(topo[1].get(frozenset((a, b)), 0) <= 1
+                        for a, b in zip(ns, ns[1:] + ns[:1]))
+    mesh = PlateSolidMesher(
+        section=sec, corners=corners, mesh_12=config.mesh_12, mesh_14=config.mesh_14,
+        n_layers=config.n_layers_3d, exposed_edges=exposed,
+    ).build()
+    corners_f, cents, normals = _si.outer_face_geometry(mesh)
+    q_face: np.ndarray | None = None
+    if covering_ball is not None:
+        q_face = _si.ball_face_flux(covering_ball, cents, normals)
+        # kept even when unlit: heated by conduction / radiation exchange (3-D)
+    elif active_csrcs or active_lsrcs:
+        # Flux ∝ E(t): unit-power pattern per source, re-evaluated each step.
+        sched = TimeVaryingFaceFlux(len(cents))
+        for src in list(active_csrcs) + list(active_lsrcs):
+            sched.add_source(src, lambda u: u.per_quad_flux(cents, normals))
+        if sched.lit:
+            q_face = sched
+    solver = SolidTransientSolver(
+        mesh=mesh, material=mat, fire_temp=fire_temp,
+        epsilon_m=epsilon_m, h_conv=h_conv, T0=20.0, q_prescribed_fn=q_fn,
+        q_per_face=q_face, epsilon_steel=_solid_eps_rerad(config, covering_ball),
+        mass_matrix=mass_matrix,
+        insulation=config.insulation,
+        prescribed_node_bcs=config.prescribed_node_bcs or None,
+        conduction=config.conduction_3d,
+    )
+    solver._shield_ball = covering_ball
+    return solver, mesh
 
 
 # ── Exposure helpers ──────────────────────────────────────────────────────────
@@ -782,6 +1253,58 @@ def _exposed_beam_ids(
     if active_lsrcs:
         result |= set(model.elements.keys())
     return result
+
+
+def _setup_radiation_geometry(eids, meshes, positions, solvers, gdof_map, n_global,
+                              config: AnalysisConfig, log_cb=None):
+    """
+    3-D radiation geometry: build one triangle scene of all member surfaces, shield the
+    directional sources (in place on the member solvers) and build the surface-to-surface
+    exchange.  Returns the RadiationExchange (or None).
+    """
+    import time as _time
+
+    from fahts.core.heat.radiation.exchange import RadiationExchange
+    from fahts.core.heat.radiation.shielding import apply_source_shielding, build_scene
+
+    t0 = _time.perf_counter()
+    scene, members = build_scene(eids, meshes, positions)
+    if scene is None:
+        return None
+    if config.shielding:
+        balls = {e: getattr(solvers[e], "_shield_ball", None) for e in members}
+        stats = apply_source_shielding(scene, members, solvers, balls)
+        msg = (f"Source shielding: {stats['lit_faces']:.0f} lit faces, "
+               f"{stats['shaded_face_equiv']:.1f} face-equivalents shaded.")
+        log.info(msg)
+        if log_cb is not None:
+            log_cb(" " + msg)
+    exchange = None
+    if config.radiation_exchange:
+        exchange = RadiationExchange(scene, members, solvers, gdof_map, n_global,
+                                     patch_size=config.rad_patch_size,
+                                     rays=config.rad_rays_per_patch,
+                                     balls={e: getattr(solvers[e], "_shield_ball", None)
+                                            for e in members})
+        if log_cb is not None:
+            log_cb(f" Radiation exchange: {exchange.n_patches} patches.")
+    log.info("Radiation geometry set-up: %.2f s", _time.perf_counter() - t0)
+    return exchange
+
+
+def exposed_analysis_element_ids(model: FEMModel, sources: list) -> set[int]:
+    """
+    IDs of beam AND shell elements that at least one ACTIVE source exposes, using the
+    same screening as ``run_analysis`` (FireZone, RadiationBall, ConcentratedSource,
+    LineSource).  Used by the GUI to count exposed elements before a run.
+    """
+    active = [s for s in sources if getattr(s, "active", True)]
+    zones = [s for s in active if isinstance(s, FireZone)]
+    balls = [s for s in active if isinstance(s, RadiationBall)]
+    csrcs = [s for s in active if isinstance(s, ConcentratedSource)]
+    lsrcs = [s for s in active if isinstance(s, LineSource)]
+    return (set(_exposed_beam_ids(model, zones, balls, csrcs, lsrcs))
+            | _exposed_shell_ids(model, zones, balls, csrcs, lsrcs))
 
 
 def _exposed_shell_ids(

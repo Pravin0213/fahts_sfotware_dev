@@ -16,10 +16,13 @@ Usage
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
+from fahts.gui.widgets.collapsible_section import CollapsibleSection
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -47,7 +50,7 @@ class RunAnalysisDialog(QDialog):
     Parameters
     ----------
     n_exposed:
-        Number of beam elements currently exposed to fire.  Displayed as
+        Number of elements (beams + shells) currently exposed to fire.  Displayed as
         informational text; 0 means the dialog will warn on accept.
     parent:
         Qt parent widget.
@@ -74,6 +77,8 @@ class RunAnalysisDialog(QDialog):
     # Shell / plate surface mesh defaults
     _DEFAULT_MESH_12: int = 4
     _DEFAULT_MESH_14: int = 2
+    # 3-D solid solver defaults
+    _DEFAULT_N_LAYERS_3D: int = 2
     # Material thermal property defaults (USFOS fahts.fem values)
     _DEFAULT_EPSILON_STEEL:    float = 0.85
     _DEFAULT_DENSITY:          float = 7850.0
@@ -173,24 +178,39 @@ class RunAnalysisDialog(QDialog):
             enclosed_gas_rho_c=self._enclosed_gas_sb.value(),
             cp_factor_table=cp_table,
             k_factor_table=k_table,
+            solver_dim=self._solver_dim_cb.currentData(),
+            n_layers_3d=self._n_layers_3d_sb.value(),
+            axial_aspect_3d=self._axial_aspect_sb.value(),
+            shielding=self._shielding_cb.isChecked(),
+            radiation_exchange=self._exchange_cb.isChecked(),
+            linear_solver=self._linear_solver_cb.currentData(),
         )
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+        # Settings live in a scroll area; the summary, estimate and the Run / Cancel
+        # buttons stay pinned outside it so they are always visible on small screens.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        body = QWidget()
+        root = QVBoxLayout(body)
         root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 0)
 
         # ── Exposure summary ─────────────────────────────────────────────────
         info_text = (
-            f"<b>{self._n_exposed}</b> beam element(s) exposed to fire will be analysed."
+            f"<b>{self._n_exposed}</b> element(s) exposed to fire will be analysed."
             if self._n_exposed > 0
             else "<b style='color:red;'>No exposed elements.</b>  "
                  "Add fire zones before running the analysis."
         )
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
-        root.addWidget(info_label)
+        outer.addWidget(info_label)
 
         # ── Time parameters ──────────────────────────────────────────────────
         time_grp = QGroupBox("Time Integration")
@@ -229,6 +249,9 @@ class RunAnalysisDialog(QDialog):
         time_form.addRow("Output every:", self._out_dt_s)
 
         root.addWidget(time_grp)
+
+        # ── Solver selection (3-D solid vs 2-D surface shell) ─────────────────
+        root.addWidget(self._build_solver_group())
 
         # ── Mesh — four profile columns side by side ──────────────────────────
         mesh_grp = QGroupBox("Mesh")
@@ -410,15 +433,30 @@ class RunAnalysisDialog(QDialog):
         shell_vbox.addStretch()
         mesh_hlayout.addWidget(shell_col)
 
-        root.addWidget(mesh_grp)
+        # Mesh and material are long and rarely changed → collapsed by default
+        mesh_grp.setTitle("")                    # the section header carries the title
+        self._mesh_section = CollapsibleSection("Mesh (element divisions)", mesh_grp)
+        root.addWidget(self._mesh_section)
 
         # ── Material thermal properties ──────────────────────────────────────
-        root.addWidget(self._build_material_group())
+        mat_grp = self._build_material_group()
+        mat_grp.setTitle("")
+        self._material_section = CollapsibleSection(
+            "Material thermal properties (steel)", mat_grp)
+        root.addWidget(self._material_section)
+        root.addStretch(1)
+
+        scroll.setWidget(body)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll, 1)
+        self._scroll, self._body = scroll, body
+        for sec in (self._mesh_section, self._material_section):
+            sec.toggled.connect(lambda _on: self._fit_to_screen())
 
         # ── Estimated output info ────────────────────────────────────────────
         self._est_label = QLabel()
         self._est_label.setStyleSheet("color: gray; font-size: 11px;")
-        root.addWidget(self._est_label)
+        outer.addWidget(self._est_label)
         self._update_estimate()
 
         self._t_end_min.valueChanged.connect(self._update_estimate)
@@ -432,7 +470,98 @@ class RunAnalysisDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Run Analysis")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        outer.addWidget(buttons)
+        self._fit_to_screen()
+
+    def _fit_to_screen(self) -> None:
+        """Size to the (expanded / collapsed) content, capped at 85 % of the screen."""
+        screen = self.screen()
+        avail = screen.availableGeometry() if screen else None
+        max_h = int(0.85 * avail.height()) if avail else 800
+        max_w = int(0.95 * avail.width()) if avail else 1400
+        self._body.adjustSize()
+        body = self._body.sizeHint()
+        sb = self._scroll.verticalScrollBar().sizeHint().width()
+        # everything outside the scroll area (summary, estimate, buttons, margins)
+        chrome = self.sizeHint().height() - self._scroll.sizeHint().height()
+        want_h = body.height() + chrome + 4
+        want_w = min(max(self.minimumWidth(), body.width() + sb + 30), max_w)
+        self.setMaximumHeight(max_h)
+        self.resize(want_w, min(want_h, max_h))
+
+    # ── Solver group builder ──────────────────────────────────────────────────
+
+    def _build_solver_group(self) -> QGroupBox:
+        grp = QGroupBox("Solver")
+        form = QFormLayout(grp)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self._solver_dim_cb = QComboBox()
+        self._solver_dim_cb.addItem("3-D solid (Hex8)", "3d")
+        self._solver_dim_cb.addItem("2-D surface shell", "2d")
+        self._solver_dim_cb.setCurrentIndex(0)
+        self._solver_dim_cb.setToolTip(
+            "3-D solid: walls meshed with brick elements through the thickness\n"
+            "(through-wall gradients, true joints).  2-D surface shell: legacy\n"
+            "axial × hoop shell with wall thickness as a scalar."
+        )
+        self._solver_dim_cb.currentIndexChanged.connect(self._on_solver_dim_changed)
+        form.addRow("Solver:", self._solver_dim_cb)
+
+        self._n_layers_3d_sb = QSpinBox()
+        self._n_layers_3d_sb.setRange(1, 8)
+        self._n_layers_3d_sb.setValue(self._DEFAULT_N_LAYERS_3D)
+        self._n_layers_3d_sb.setToolTip(
+            "Hex8 element layers through each wall / plate thickness (3-D only).\n"
+            "PIPE members use at least 12 elements around the circumference in 3-D."
+        )
+        form.addRow("Layers through thickness:", self._n_layers_3d_sb)
+
+        self._axial_aspect_sb = QDoubleSpinBox()
+        self._axial_aspect_sb.setRange(0.0, 50.0)
+        self._axial_aspect_sb.setDecimals(1)
+        self._axial_aspect_sb.setSingleStep(0.5)
+        self._axial_aspect_sb.setValue(2.0)
+        self._axial_aspect_sb.setSpecialValueText("off")
+        self._axial_aspect_sb.setToolTip(
+            "3-D: limit axial element length to this multiple of the cross-section element\n"
+            "size (long members are subdivided automatically; axial counts above are minima).\n"
+            "Elongated thin-wall elements cause unphysical hot/cold spots at sharp flux edges."
+        )
+        form.addRow("Max axial aspect ratio:", self._axial_aspect_sb)
+
+        self._shielding_cb = QCheckBox("Shield sources (ray tracing)")
+        self._shielding_cb.setChecked(True)
+        self._shielding_cb.setToolTip(
+            "3-D: radiation ball / point / line source flux only reaches faces that can see\n"
+            "the source — members in between cast shadows (incl. self-shadowing)."
+        )
+        form.addRow("", self._shielding_cb)
+        self._exchange_cb = QCheckBox("Radiation between members")
+        self._exchange_cb.setChecked(True)
+        self._exchange_cb.setToolTip(
+            "3-D: surface-to-surface radiation exchange between member surfaces\n"
+            "(Monte Carlo view factors with obstruction, grey diffuse surfaces)."
+        )
+        form.addRow("", self._exchange_cb)
+
+        self._linear_solver_cb = QComboBox()
+        self._linear_solver_cb.addItem("Iterative (PCG)", "cg")
+        self._linear_solver_cb.addItem("Direct (sparse LU)", "direct")
+        self._linear_solver_cb.setToolTip(
+            "CG (default): Jacobi-preconditioned conjugate gradient, warm-started —\n"
+            "2–4× faster and lower memory on large 3-D models (falls back to direct\n"
+            "if it fails to converge).\n"
+            "Direct: sparse LU; robust reference for small models."
+        )
+        form.addRow("Linear solver:", self._linear_solver_cb)
+        return grp
+
+    def _on_solver_dim_changed(self) -> None:
+        self._n_layers_3d_sb.setEnabled(self._solver_dim_cb.currentData() == "3d")
+        self._axial_aspect_sb.setEnabled(self._solver_dim_cb.currentData() == "3d")
+        self._shielding_cb.setEnabled(self._solver_dim_cb.currentData() == "3d")
+        self._exchange_cb.setEnabled(self._solver_dim_cb.currentData() == "3d")
 
     # ── Material group builder ────────────────────────────────────────────────
 
@@ -606,8 +735,8 @@ class RunAnalysisDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "No Exposed Elements",
-                "There are no beam elements exposed to fire.\n\n"
-                "Add at least one active fire zone before running the analysis.",
+                "No elements (beams or plates) are exposed to an active heat source.\n\n"
+                "Add an active fire zone or radiation ball that reaches the model.",
             )
             return
 

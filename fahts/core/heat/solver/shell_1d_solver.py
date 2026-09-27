@@ -219,9 +219,11 @@ class Shell1DSolver:
         for _iter_i in range(self._nonlinear_max_iter):
             K_i, M_i, Q_i = self._assemble_step(T_iter, t)
             A = K_i + _mass_to_matrix(M_i, two_over_dt)
+            # Current-iterate K_i, M_i on the history side (not K_prev/M_prev):
+            # keeps CN 2nd-order in Δt when k(T)/c(T) vary.
             B = (
-                Q_i - self._K_prev @ T_prev
-                + _mass_matvec(self._M_prev, self._T_dot_prev)
+                Q_i - K_i @ T_prev
+                + _mass_matvec(M_i, self._T_dot_prev)
             )
 
             dT = np.linalg.solve(A, B)

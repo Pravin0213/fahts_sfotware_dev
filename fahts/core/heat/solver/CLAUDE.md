@@ -7,9 +7,88 @@
 **Legacy (kept, not primary):** `TransientSolver` in `time_integrator.py`
 
 ### SurfaceTransientSolver
-- Crank-Nicolson θ=1/2 (SINTEF Eq. 3.2.30)
+- Crank-Nicolson θ=1/2 (current-iterate history terms — see CN section)
 - Accepts a `BeamSurfaceMesh`; calls `element_coords_2d()` for all geometry
 - Heat accumulation element: lumped mass added at inner nodes for BOX/PIPE
+
+### 3-D solid path (default, `config.solver_dim="3d"`, 2026-09-27)
+- BOX/IHPROFIL/PIPE → `*SolidMesher(n_layers=config.n_layers_3d)` (PIPE uses
+  `config.c_circ_3d = max(c_circ, 12)`); QUADSHEL → `PlateSolidMesher`; TRISHELL → 1-D fallback.
+- Solver: `SolidTransientSolver` (`solid_solver.py`). Per-face BC data (exposure, view
+  factors, ball/point/line flux, enclosed-gas `M_extra`) built in `solid_integration.py` from
+  FACE_OUTER faces in global coords (origin = n1 + ecc1). No `double_sided` hacks.
+- DOF map: `solid_integration.build_solid_dof_map` (tol = min(1 mm, 0.2·h_min), never unions
+  two nodes of one member) + `build_joint_links` → `joint_ties.build_joint_ties`: every free
+  beam-end FACE_END node / plate edge node is tied to the CLOSEST POINT on the partner member's
+  surface (triangle barycentric interpolation), G = 45·A_trib/max(d, h_min), K += G·w·wᵀ with
+  w = e_p − Σλ_k e_k → symmetric, zero row sums, PSD. Through-ends (already merged collinear
+  continuations) don't tie unless the joint has no free end. Couples T/K/X joints (brace end
+  inside a hollow chord), plate edges along beams, and angled plates with odd n_layers.
+- Prescribed nodes: `GlobalThermalSolver` maps each member solver's `_prescribed_bcs` to global
+  DOFs and solves only the free block (symmetric elimination, CG-safe); pinned Ṫ = 0.
+- Point/line sources: `bc/face_flux.TimeVaryingFaceFlux` = static + Σ E_s(t)·unit-power pattern;
+  both solvers accept it as `q_per_face`/`q_per_quad` and re-evaluate every assembly. Members
+  are kept when any face CAN be lit (E(0)=0 ramps no longer skipped).
+- `GlobalThermalSolver(linear_solver="cg"|"direct")` — performance design (2026-09-27):
+  * batchable solid members (lumped mass, no insulation) assembled together by
+    `batch_assembly.SolidBatch`: K_data = S_K·params, M = S_M·ρc, Q = S_Q·loads with precomputed
+    sparse operators (params = k per hex, h per face, radiation tangent per face Gauss point,
+    h_in); other members (2-D, 1-D, insulated, consistent mass) assembled one by one into the
+    same global CSR pattern (built once). Single-threaded (thread pool measured slower — GIL).
+  * `linear_solve.SPDSolver`: Jacobi-PCG, warm-started, rtol 1e-8 in the global solver
+    (1e-10 in standalone `SolidTransientSolver`), direct fallback. numba parallel PCG kernel
+    when numba is importable and N ≥ 20 000 (else scipy CG). Dirichlet by symmetric elimination.
+  * Radiation −εσT⁴ is Newton-linearised (h_r = 4εσT³ into K) in the 3-D solver.
+  * model_file.fem (517 members, 64k DOFs, 20 steps): stepping 17 s → ~5.5 s; single 8.4k-node
+    member 60 steps: 28 s → ~1 s. Batch ≡ per-member to round-off (tests/test_batch_assembly.py).
+  `solver_dim="2d"` keeps the legacy surface path (per-member assembly).
+
+### Monotone 3-D discretisation (default since 2026-09-27)
+Found on model_t1.fem with a 350 kW/m² RadiationBall: nodes at −69 °C / +1577 °C
+(radiative equilibrium is 1450 °C). Causes and fixes (config defaults):
+- `conduction_3d="monotone"`: two-point edge stencil `fem_3d.hex8_conductivity_twopoint_base`
+  (M-matrix; metric det J·J⁻ᵀJ⁻¹ at the hex centre). The consistent trilinear K has POSITIVE
+  in-plane couplings on thin walls (c ≪ a, b) → over/undershoot at sharp lit/shadow edges.
+  `"consistent"` still available (verification tests use it).
+- Monotone mode lumps boundary terms (nodal quadrature for convection/radiation/inner Robin).
+- `axial_aspect_3d=2.0`: axial elements ≤ 2× cross-section element size (`axial_divisions`);
+  configured n_length* are minima. Coarse axial meshes on long members smeared the ball load.
+- BOX solid mesh is an orthogonal tensor ring (rectangular corner blocks) — the old diagonal-
+  trapezoid corners were skewed and made the two-point stencil inconsistent there.
+- Joint ties are star links p–v_k with G·λ_k (graph Laplacian, no positive couplings).
+- Re-radiation (prescribed-flux mode) is to the ambient/initial temperature, not 0 K.
+Result: ball case bounded 20.3–1451.5 °C; OpenFOAM comparison BOX now PASS (0.19 %).
+Tests: tests/test_monotone_3d.py.
+
+### Radiation geometry — shielding + member-to-member exchange (3-D, 2026-09-27)
+Package `fahts/core/heat/radiation/`; set up in `analysis_runner._setup_radiation_geometry`
+after the DOF map. Config: `shielding=True`, `radiation_exchange=True`, `rad_patch_size=0.5`,
+`rad_rays_per_patch=256` (Run Analysis dialog check boxes).
+- `raycast.TriangleScene`: numba uniform-grid ray caster (Möller–Trumbore, double-sided);
+  verified against brute force; ~10⁷ rays/s.
+- `shielding.build_scene`: all members' boundary faces → triangles (owner = global face id).
+  NOTE the beam frame (x, y = x×z, z) is LEFT-handed → local→global mirrors; scene normals are
+  flipped when the global hex volume is negative (bug found: normals pointed inward).
+- Shielding (`apply_source_shielding`, in place on member solvers before GlobalThermalSolver):
+  RadiationBall → visibility = unblocked fraction of 19 rays to the ball's visible FRONT CAP
+  (steel inside the ball doesn't block it), only cap points above the face's tangent plane;
+  engulfed faces keep full flux. Point source: 1 ray. LineSource: per sub-source rays.
+- Exchange (`exchange.RadiationExchange`): patches (member × normal bin × spatial bin), Monte
+  Carlo cosine-weighted view factors (obstruction included), A·F symmetrised, rows ≤ 1.
+  q_i = exp_i Σ_j F_ij [ε_i J_j − a_i G_i], J_j = ε_j σT_j⁴ + (1−ε_j)G_j; background G/a:
+  ambient (σT_amb⁴, ε), engulfed in ball (flux, 1), FireZone (σT_f⁴ or σFε_fT_f⁴, ε).
+  Explicit load added in `GlobalThermalSolver._assemble_global`. Isothermal ambient → 0.
+- Tests: tests/test_radiation_geometry.py (analytic parallel-plate F within 3 %, shielding of
+  parallel_plates.fem, fire-zone boundedness).
+
+### Free edges / free ends and unlit elements (3-D, 2026-09-27)
+- `_model_topology(model)` → node and edge use counts (beams count as an edge).
+- Plate edges used by only one shell (and no beam) → `PlateSolidMesher(exposed_edges=…)`
+  makes their thickness faces FACE_OUTER; beam end caps at nodes used by only that member
+  → FACE_OUTER (`_expose_free_beam_ends`). Connected edges/ends stay FACE_END (adiabatic).
+- 3-D no longer skips elements whose faces get zero DIRECT ball / point / line flux: they
+  are heated by conduction and radiation exchange (found with an 80 cm plate level with a
+  ball: whole plate skipped). Tests: tests/test_free_edges.py.
 
 ### Analysis Dispatch — analysis_runner.py
 `run_analysis(model, fire_zones, config, progress_cb, cancel_check) → TemperatureField`
@@ -55,17 +134,22 @@ module docstring for the full derivation.
 
 ---
 
-## Crank-Nicolson Theory (SINTEF Eq. 3.2.30)
+## Crank-Nicolson Theory
+
+**Changed 2026-09-27:** the history terms use the CURRENT Picard iterate's K_i, M_i (not
+K_{i-1}, M_{i-1} as in SINTEF Eq. 3.2.30). The lagged form left an O(Δt) error whenever
+k(T)/c(T) vary (validation case 7: order 1.07 → 1.95 after the fix). Applied in all solvers.
+With prescribed nodes, Ṫ0 is solved on the free block only (consistent-mass correctness).
 
 ```
 A = Ki + (2/Δt)·Mi
-B = Qi - K_{i-1}·T_{i-1} + M_{i-1}·Ṫ_{i-1}
+B = Qi - Ki·T_{i-1} + Mi·Ṫ_{i-1}
 ΔTi = A^{-1}·B
 Ti   = T_{i-1} + ΔTi
 Ṫi   = (2/Δt)·ΔTi - Ṫ_{i-1}
 ```
 Initial rate: `Ṫ0 = M0^{-1}·(Q0 - K0·T0)`
-Between steps: save `K_prev`, `M_prev`, `T_dot_prev`.
+Between steps only `T_dot_prev` is needed (`K_prev`/`M_prev` just mark the state as initialised).
 
 ---
 
@@ -126,51 +210,13 @@ q_net = ε_m·σ·(T_fire_K⁴ − T_steel_K⁴) + h_conv·(T_fire − T_steel)
 
 ---
 
-## ⚠️ KNOWN LIMITATION — No Cross-Element Thermal Coupling (needs fix)
+## Cross-element thermal coupling — RESOLVED
 
-**Status:** confirmed gap, not yet scheduled. See ROADMAP.md 5.11.
-
-**What the real SINTEF FAHTS does** (`docs/3D_FEM_heat_transfer_theory.txt` §3.2.18/§17,
-§15.2): builds ONE global system `M·Ṫ + K·T = Q(T)` across the whole structure. Each
-beam's 2-D cross-section mesh is generated independently, but nodes from *different*
-beam elements that land within a coincidence tolerance of each other (e.g. at a shared
-structural joint/node) are **merged into one shared global mesh node**. This couples
-their element K/M contributions into a single assembled matrix, so heat genuinely
-conducts from one member into its neighbor through shared joints. Confirmed empirically
-by the user running the real SINTEF solver: applying heat to one element and refining
-the mesh causes heat to visibly flow into adjacent elements through shared nodes.
-
-**What this codebase currently does** (verified in `analysis_runner.py`): each beam
-element gets its own independent `BeamSurfaceMesh` and its own `SurfaceTransientSolver`
-instance (`analysis_runner.py:461`, `:582`). The main time-stepping loop does
-`for eid in all_eids:` and solves each beam's local Crank-Nicolson system in complete
-isolation — K, M, Q are sized only to that one beam's own mesh. There is no
-node-coincidence/merge logic across separate beam elements anywhere in
-`fahts/core/heat/` (only the intra-section wall-corner dedup for a single BOX,
-1e-10 m tolerance — that's within one element, not across elements). Beams currently
-only "interact" indirectly, via shared fire-zone/radiation-ball boundary conditions
-(same environment temperature), never via real conduction through a shared joint.
-
-**Fix needed (rough shape, to be scoped properly before work starts):**
-1. After per-element surface meshes are built, find mesh nodes from different beam
-   elements that coincide (within a tolerance) at shared structural `Node` positions
-   (model joints) — analogous to the existing wall-corner dedup, but *across* elements.
-2. Merge coincident nodes into shared global DOFs (union-find / global node numbering
-   scheme, or a mapping table from local (eid, local_node_idx) → global_dof).
-3. Assemble one global K, M, Q per time step from all element contributions (scatter-add
-   into the global sparse matrix at shared DOFs), replacing the current per-element
-   `SurfaceTransientSolver` loop with a single global Crank-Nicolson solve.
-4. Update `analysis_runner.py` dispatch, `TemperatureField` storage (currently keyed
-   per-eid — needs to map global DOF solution back to per-element `T_section` arrays),
-   and re-validate against the USFOS benchmark (`usfos_verification_results/`) since
-   this changes solved temperatures, not just internal structure.
-5. Consider whether this should be opt-in (perf cost of one big sparse solve vs many
-   small independent ones, though the current per-element loop is already parallelized
-   with a `ThreadPoolExecutor`-style pattern — see `analysis_runner.py:160`).
-
-Do not attempt this as a quick patch — it changes the fundamental solve architecture
-(per-element solvers → one global assembled system) and touches mesh generation,
-solver dispatch, and results storage. Scope it as its own task.
+Previously listed here as a known limitation. Now: one global system in `GlobalThermalSolver`;
+co-located nodes merged into shared DOFs (2-D: `_build_global_dof_map`, 3-D:
+`build_solid_dof_map`), plus 3-D joint surface ties (`joint_ties.py`) for non-coincident
+joint geometry. Tests: `tests/test_solid_integration.py::TestJointCoupling`,
+`tests/test_open_issue_fixes.py::TestJointTies`.
 
 ---
 

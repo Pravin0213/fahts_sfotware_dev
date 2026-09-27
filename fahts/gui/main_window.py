@@ -327,6 +327,16 @@ class MainWindow(QMainWindow):
         self._action_show_mesh.toggled.connect(self._on_toggle_show_mesh)
         self._action_show_mesh.setEnabled(False)
 
+        # ── View — wall thickness ─────────────────────────────────────────────
+        self._action_show_thickness = QAction("Show Wall &Thickness", self)
+        self._action_show_thickness.setCheckable(True)
+        self._action_show_thickness.setChecked(True)
+        self._action_show_thickness.setShortcut("T")
+        self._action_show_thickness.setStatusTip(
+            "Draw members with their real wall/plate thickness (off = thin USFOS panels)"
+        )
+        self._action_show_thickness.toggled.connect(self._on_toggle_show_thickness)
+
         # ── View — mesh inspector ─────────────────────────────────────────────
         self._action_inspect_mesh = QAction("&Inspect Mesh", self)
         self._action_inspect_mesh.setCheckable(True)
@@ -437,6 +447,7 @@ class MainWindow(QMainWindow):
         view_m.addSection("Render mode")
         view_m.addAction(self._action_mode_section)
         view_m.addAction(self._action_mode_wire)
+        view_m.addAction(self._action_show_thickness)
         view_m.addAction(self._action_show_mesh)
         view_m.addAction(self._action_inspect_mesh)
         view_m.addSeparator()
@@ -762,6 +773,10 @@ class MainWindow(QMainWindow):
         self._status(f"Mesh preview applied — {total} elements ({n_shells} shells)."
                      if n_shells else f"Mesh preview applied — {total} elements.")
 
+    def _on_toggle_show_thickness(self, checked: bool) -> None:
+        """Switch between real-thickness solid rendering and thin mid-surface panels."""
+        self._scene.set_show_thickness(checked)
+
     def _on_toggle_show_mesh(self, checked: bool) -> None:
         """Show or hide the FEM analysis mesh wireframe overlay."""
         if checked:
@@ -962,23 +977,14 @@ class MainWindow(QMainWindow):
 
     def _on_run_analysis(self) -> None:
         """Open the Run Analysis dialog and emit the config when accepted."""
-        from fahts.core.heat.bc.view_factor import exposed_element_ids
+        from fahts.core.heat.solver.analysis_runner import exposed_analysis_element_ids
         from fahts.gui.dialogs.run_analysis_dialog import RunAnalysisDialog
 
         if self._model is None:
             return
 
-        fire_zones = [s for s in self._fire_sources if isinstance(s, FireZone)]
-        rad_balls  = [s for s in self._fire_sources if isinstance(s, RadiationBall)]
-        exp_eids: set[int] = set()
-        if fire_zones:
-            exp_eids |= exposed_element_ids(
-                self._model.elements, fire_zones, self._model.nodes
-            )
-        for ball in rad_balls:
-            exp_eids |= ball.exposed_element_ids(
-                self._model.elements, self._model.nodes
-            ).keys()
+        # Same screening as run_analysis: beams AND shells, all active source types
+        exp_eids = exposed_analysis_element_ids(self._model, self._fire_sources)
 
         dlg = RunAnalysisDialog(n_exposed=len(exp_eids), parent=self)
         dlg.config_accepted.connect(self._on_analysis_config_accepted)

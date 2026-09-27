@@ -120,10 +120,11 @@ element_ids: list[int]
 | Phase 4 — Results Visualisation | ✅ Complete |
 | **USFOS-style thin rendering** | **✅ Done** — BOX/PIPE/I-beam rendered as flat mid-surface panels; no wall thickness |
 | **Mesh Inspector** | **✅ Done** — "Inspect Mesh" toggle (shortcut I); click quad → see K-matrix neighbours |
-| **Phase 3E.8 — USFOS Benchmark** | **⬜ Next task** |
+| **3-D Hex8 solid solver (2026-09-27)** | **✅ Default path** — `solver_dim="3d"`; plan + status in `docs/3d_solver_plan.md`; validation in `validation/report_3d.md` (`python -m validation.validate_3d`) |
+| Phase 3E.8 — USFOS Benchmark | ⬜ Dropped (project pivot to process equipment) |
 | Phase 5 — Insulation + Advanced | ⬜ Not started |
 
-**Tests: 1008 passing, 1 skipped.**
+**Tests (2026-09-27, non-GUI): 944 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`). GUI/VTK tests abort with `QT_QPA_PLATFORM=offscreen`; run them with `QT_QPA_PLATFORM=xcb` on a real display (501 pass, 13 pre-existing failures: colormap default + animation toolbar).
 Run: `python -m pytest tests/ -q`
 
 ---
@@ -140,7 +141,12 @@ Run: `python -m pytest tests/ -q`
 
 ## Rendering
 
-`build_model_mesh` produces **USFOS-style thin panels** (no wall thickness rendered):
+**Default (2026-09-27): real wall thickness** — View → *Show Wall Thickness* (shortcut `T`,
+on by default) draws members from the 3-D solid meshers (outer + inner surfaces + end rings;
+plates ± t/2): `build_model_mesh(..., show_thickness=True)`, `build_thick_member_mesh`,
+`build_thick_shell_mesh`, `SceneManager.set_show_thickness()`. Toggle off for the legacy view.
+
+With thickness off, `build_model_mesh` produces **USFOS-style thin panels** (no wall thickness):
 - BOX → 4 lateral quads (no end caps); n_cells = 4 per beam
 - PIPE → outer ring quads only; n_cells = c_circ per pipe
 - I-beam → 3 flat panels (top flange / web / bottom flange); n_cells = 3 per I-beam

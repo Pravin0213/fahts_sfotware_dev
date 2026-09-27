@@ -134,6 +134,7 @@ class TestAnalysisModeRunAnalysis:
             t_end=60.0, dt=60.0, output_dt=60.0,
             analysis_mode=analysis_mode,
             mass_matrix=config_mass,
+            solver_dim="2d",   # patches SurfaceTransientSolver (2-D path only)
         )
 
         with patch.object(SurfaceTransientSolver, "__init__", recording_init):
