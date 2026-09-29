@@ -2,12 +2,14 @@
 
 ## Current State
 
-**1008 passing, 1 skipped** (as of 2026-05-18)
+Non-GUI (2026-09-29): **944 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`).
+GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
 
 ```bash
 cd /home/oslprb/vessfire_heatsolver
-python -m pytest tests/ -q          # all tests
-python -m pytest tests/test_foo.py  # single file
+python -m pytest tests/ -q                        # all tests (golden tests skipped)
+python -m pytest tests/test_foo.py                # single file
+python -m pytest tests/regression --golden -q     # process-model goldens (~4 min)
 ```
 
 Run tests before declaring any task done. Both `model_file.fem` and `model_t1.fem`
@@ -41,13 +43,31 @@ must parse cleanly — smoke tests for both exist.
 
 ---
 
+## Golden Regression Tests — process model (`tests/regression/process/`)
+
+Freeze the behaviour of the original vfpy vessel model (`legacy/vfpy/`) so its port into
+`src/fahts/` can be verified step by step. **Run `--golden` after every porting change.**
+
+- `cases/<id>/` — 11 input decks (Admin/Segment/Scenario.brl, heatload.scn), one per physics
+  branch (H2/CH4/LPG/pseudo/free water/retrograde; fire, BDV, PSV, ambient, rupture)
+- `golden/` — 18 runs: time series + rupture table per (case, profile, duration);
+  `manifest.json` has library versions and the legacy/DB hashes
+- `harness.py` — `IMPLEMENTATIONS = {"legacy": ...}`; add the ported implementation there
+  and the same test checks it against the same goldens
+- Tolerance: `RTOL = 1e-6` of each column's magnitude. Never loosen it or regenerate goldens
+  (`python -m tests.regression.process.generate`) to make a port pass — find the difference.
+- Needs CoolProp and the local material DB `data/reference/vessfire/vessfire.db` (gitignored,
+  VessFire proprietary); skipped without them.
+
+---
+
 ## USFOS Benchmark Test (Phase 3E.8 — NEXT TASK)
 
 Goal: automated comparison of FAHTS output against `validation/usfos/reference/fahts_beltemp.fem`.
 
 Reference: `validation/usfos/reference/fahts_beltemp.fem` — 2056 elements, 15 time steps.
 Heat source: RadiationBall, center=(343,484,64)m, r1=5m/flux1=350kW, r2=100m/flux2=1.5kW.
-Model: `model_t1.fem`.
+Model: `examples/models/model_t1.fem`.
 
 Expected test structure:
 1. Build RadiationBall from benchmark config

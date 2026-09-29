@@ -1,0 +1,19 @@
+$VessFire 1
+
+#Max_ruptured_pipes 0 0.8
+
+#StressType U
+#StressFactor 1
+#External_Longitudinal_Stress 30
+#Blowdown_valve 0.02 0.8 0
+#Blowdown_line 0.0762 0.008 30
+#BDV_Valve_location 1 0
+#Back_pressure 101.325
+#Vessel VAL-VSL 490 P355NH_P355NL2 2 0.06 6 %CorTol 0
+#Vessel_conditions 5000 293.15 0 0.1 %Shell 293.15
+#Vessel_Outside_Conditions 293.15 -0.5 0.85
+#Vessel_Orientation H
+
+#Fluid
+C1 0.95000000
+H2O 0.05000000

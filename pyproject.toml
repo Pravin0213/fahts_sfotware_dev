@@ -40,4 +40,5 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with -m \"not slow\")",
+    "golden: golden regression vs frozen reference outputs (opt-in: --golden)",
 ]

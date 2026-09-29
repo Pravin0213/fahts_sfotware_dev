@@ -55,6 +55,7 @@ vessfire_heatsolver/
 │   ├── coupling/          ⬜ the ONLY place that combines wall ↔ process ↔ fire
 │   └── cli.py             ⬜ headless case runner
 ├── tests/                 ✅ (target: unit/<pkg>/, integration/, regression/)
+│   └── regression/process/ ✅ golden outputs of legacy/vfpy — run with --golden when porting
 ├── validation/            ✅ runnable benchmarks + reports
 │   ├── validate_3d.py     ✅ analytical checks  ├── openfoam/ ✅  ├── usfos/reference/ ✅
 │   └── vessfire/          ⬜ VessFire comparison readers/tools (never imported by src/)
@@ -64,7 +65,8 @@ vessfire_heatsolver/
 ├── docs/                  ✅ theory, plans (target: theory/, decisions/)
 ├── data/                  gitignored — large reference results, study outputs
 ├── Test/                  gitignored — raw import being migrated; read-only source, do not edit
-└── legacy/                READ-ONLY reference scripts, do NOT import
+└── legacy/                READ-ONLY reference scripts, do NOT import from src/
+    └── vfpy/              frozen process-model reference (only the golden harness imports it)
 ```
 
 **Layering rule (target):** `common → materials/thermo → fire/wall/process/relief/rupture

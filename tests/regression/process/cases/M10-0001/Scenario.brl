@@ -1,0 +1,21 @@
+Brl 1
+
+#VAL-VSL_Inventory
+Temperature 293.15
+#VAL-VSL_Shell
+Temperature 293.15
+
+#Background
+293.15 0.9 30 1433.96
+0 250
+3600 250
+3601 0
+
+#PeakHeat
+293.15 0.9 30 1433.96
+0 250
+3600 250
+3601 0
+
+
+#End_of_file

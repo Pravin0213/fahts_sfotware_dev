@@ -1,0 +1,139 @@
+{
+  "generated": "2026-09-29",
+  "reference": "legacy/vfpy (frozen snapshot of Test/vfpy, 2026-09-24)",
+  "legacy_md5": {
+    "fluid.py": "2f9417846c2f17d6fdf09f6da0af7de3",
+    "heat_transfer.py": "d558f68850d69c574568452d168e35f1",
+    "stress.py": "3e3536573e8e63d4f9231534082a42b7",
+    "thermo_data.py": "211aefa075145d862acd0aed18e996c8",
+    "thermo_pr.py": "668e0146d404b01941898441b14ac8d1",
+    "twophase_physics.py": "4a3bf283cda59f06e419729bb95e8ce3",
+    "valves.py": "e63a13645c8a8f1a9d47be29969a405e",
+    "valves2.py": "59537fb496ceab0bf4eaec7285c905d8",
+    "vessel.py": "fda671ab950f83cf23e64e8de43d470e",
+    "vessel2.py": "477435429a4d0f16c031863df5d25d75"
+  },
+  "material_db_md5": "324e6d598738ba6e005068ba7744dd30",
+  "versions": {
+    "python": "3.12.4",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "pandas": "3.0.2",
+    "coolprop": "8.0.0"
+  },
+  "out_every_s": 10.0,
+  "profiles": {
+    "vf": {},
+    "physics": {
+      "wet_above_crit": "single-phase",
+      "wet_boiling": "full",
+      "water_mode": "physical",
+      "psv_liquid": "gas"
+    }
+  },
+  "cases": {
+    "M03-0003": "H2, no fire, ambient exchange (wind h_field)",
+    "M04-0003": "H2 cold blowdown (BDV + line)",
+    "M05-0003": "LPG two-phase, PSV relief (cold, pressurised)",
+    "M06-0003": "H2 closed vessel in 150 kW/m2 fire (Tresca failure ~870 s)",
+    "M07-0004": "CH4 fire + BDV",
+    "M08-0001": "CH4 fire + PSV (type 0)",
+    "M09-0001": "CH4 fire + BDV + PSV",
+    "M10-0001": "CH4 250 kW/m2 fire, stress type Y (rupture)",
+    "M11-0002": "C1 + pseudo-component liquid, fire + BDV",
+    "M12-0004": "gas + free water, fire + BDV",
+    "M15-0002": "retrograde rich gas, fire + BDV"
+  },
+  "runs": {
+    "M03-0003__vf__600s": {
+      "run": "M03-0003__vf__600s",
+      "rows": 61,
+      "seconds": 45.0
+    },
+    "M04-0003__vf__600s": {
+      "run": "M04-0003__vf__600s",
+      "rows": 61,
+      "seconds": 49.1
+    },
+    "M05-0003__vf__600s": {
+      "run": "M05-0003__vf__600s",
+      "rows": 61,
+      "seconds": 86.0
+    },
+    "M06-0003__vf__900s": {
+      "run": "M06-0003__vf__900s",
+      "rows": 91,
+      "seconds": 73.9
+    },
+    "M07-0004__vf__900s": {
+      "run": "M07-0004__vf__900s",
+      "rows": 91,
+      "seconds": 70.1
+    },
+    "M08-0001__vf__900s": {
+      "run": "M08-0001__vf__900s",
+      "rows": 91,
+      "seconds": 74.6
+    },
+    "M09-0001__vf__900s": {
+      "run": "M09-0001__vf__900s",
+      "rows": 91,
+      "seconds": 74.4
+    },
+    "M10-0001__vf__900s": {
+      "run": "M10-0001__vf__900s",
+      "rows": 91,
+      "seconds": 75.2
+    },
+    "M11-0002__vf__900s": {
+      "run": "M11-0002__vf__900s",
+      "rows": 91,
+      "seconds": 121.9
+    },
+    "M12-0004__vf__900s": {
+      "run": "M12-0004__vf__900s",
+      "rows": 91,
+      "seconds": 98.9
+    },
+    "M15-0002__vf__900s": {
+      "run": "M15-0002__vf__900s",
+      "rows": 91,
+      "seconds": 135.2
+    },
+    "M05-0003__physics__600s": {
+      "run": "M05-0003__physics__600s",
+      "rows": 61,
+      "seconds": 81.2
+    },
+    "M11-0002__physics__900s": {
+      "run": "M11-0002__physics__900s",
+      "rows": 91,
+      "seconds": 124.6
+    },
+    "M12-0004__physics__900s": {
+      "run": "M12-0004__physics__900s",
+      "rows": 91,
+      "seconds": 101.0
+    },
+    "M15-0002__physics__900s": {
+      "run": "M15-0002__physics__900s",
+      "rows": 91,
+      "seconds": 142.8
+    },
+    "M06-0003__vf__3600s": {
+      "run": "M06-0003__vf__3600s",
+      "rows": 361,
+      "seconds": 152.3
+    },
+    "M10-0001__vf__3600s": {
+      "run": "M10-0001__vf__3600s",
+      "rows": 361,
+      "seconds": 153.2
+    },
+    "M11-0002__vf__3600s": {
+      "run": "M11-0002__vf__3600s",
+      "rows": 361,
+      "seconds": 216.9
+    }
+  }
+}

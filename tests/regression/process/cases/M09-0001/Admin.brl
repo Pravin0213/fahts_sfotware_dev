@@ -1,0 +1,7 @@
+#Segment_Definition_File segment
+#Scenariofile scenario
+#Vessel_Flame_File heatload
+#Vessfire_Result_File piperesults
+#Maxtime 3600
+#Output_Frequence 10
+#Max_Timestep 1
