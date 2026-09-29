@@ -76,6 +76,7 @@ class SaturationMixin:
             lnV, _ = self._lnphi(z, T_, P, "V")
             K_ = np.exp(lnL - lnV)
             return math.log(float((z / K_).sum())), K_
+
         for it in range(maxit):
             f, K = fk(T, w)
             if np.abs(np.log(K)).max() < 1e-5:
@@ -106,9 +107,11 @@ class SaturationMixin:
 
     def _wilson_T(self, P, z, bubble):
         from scipy.optimize import brentq
+
         def f(T):
             K = self._wilson(T, P)
             return math.log(K @ z) if bubble else -math.log((z / K).sum())
+
         try:
             return brentq(f, 30.0, 1500.0)
         except ValueError:

@@ -12,9 +12,9 @@ import numpy as np
 # EN 1993-1-2 Table 3.1, carbon steel: k_E,theta
 EC3_T = np.array([20, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200.0])
 EC3_KE = np.array([1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.31, 0.13, 0.09, 0.0675, 0.045, 0.0225, 0.0])
-E20 = 210e3      # MPa, EN 1993-1-1 3.2.6
-NU = 0.3         # EN 1993-1-1 3.2.6
-E_FLOOR = 1e-3   # keep FE stiffness non-singular at >= 1200 C
+E20 = 210e3  # MPa, EN 1993-1-1 3.2.6
+NU = 0.3  # EN 1993-1-1 3.2.6
+E_FLOOR = 1e-3  # keep FE stiffness non-singular at >= 1200 C
 
 
 def E_of_T(T_C):
@@ -25,5 +25,8 @@ def E_of_T(T_C):
 def eps_th(T_C):
     """Thermal elongation Delta l/l relative to 20 C, EN 1993-1-2 3.4.1.1."""
     T = np.asarray(T_C, float)
-    return np.where(T < 750, 1.2e-5 * T + 0.4e-8 * T**2 - 2.416e-4,
-                    np.where(T <= 860, 1.1e-2, 2e-5 * T - 6.2e-3))
+    return np.where(
+        T < 750,
+        1.2e-5 * T + 0.4e-8 * T**2 - 2.416e-4,
+        np.where(T <= 860, 1.1e-2, 2e-5 * T - 6.2e-3),
+    )

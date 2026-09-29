@@ -69,8 +69,11 @@ class StateFlashMixin:
                 r.info["method"] = "single"
                 return r
         T0 = init.T if init is not None else T_guess
-        P0 = init.P if init is not None else (P_guess or (self._uvP1 if self._uvP1 and
-                                                          self._uvP1 > 0 else 1e6))
+        P0 = (
+            init.P
+            if init is not None
+            else (P_guess or (self._uvP1 if self._uvP1 and self._uvP1 > 0 else 1e6))
+        )
         active = np.flatnonzero(z > 1e-12)
         if len(active) == 1:
             r = self._uv_pure(int(active[0]), z, u, v, T0)
@@ -112,8 +115,9 @@ class StateFlashMixin:
                 return False
         extra = [p.x for p in init.phases] if init is not None else ()
         fw = self.iw is not None and self.free_water and z[self.iw] > 1e-12
-        stable, w, tm, Zw = self.stability(zf, T1, P1, lnphi_z=lnphiz, extra_trials=extra,
-                                           skip_aqueous=fw)
+        stable, w, tm, Zw = self.stability(
+            zf, T1, P1, lnphi_z=lnphiz, extra_trials=extra, skip_aqueous=fw
+        )
         if not stable:
             return False
         return self._result1(z, T1, P1, Z1)
@@ -135,22 +139,26 @@ class StateFlashMixin:
             bV = (v - L.v) / (V.v - L.v)
             st[T] = (L, V, bV, Ps)
             return (L.u + bV * (V.u - L.u) - u) / (R * T0), T
+
         try:
-            T, fT, _, _, _ = solve_monotone_1d(f, min(T0, Tmax * 0.999), -2.0, 20.0, Tmax, incr=True,
-                                      xtol=1e-11, ftol=1e-12)
+            T, fT, _, _, _ = solve_monotone_1d(
+                f, min(T0, Tmax * 0.999), -2.0, 20.0, Tmax, incr=True, xtol=1e-11, ftol=1e-12
+            )
         except (RuntimeError, ValueError):
             return None
         L, V, bV, Ps = st[T]
         if not (0.0 <= bV <= 1.0):
             return None
         V.beta, L.beta = bV, 1.0 - bV
-        return FlashResult(T, Ps, z, [p for p in (V, L) if p.beta > 0], kind="pure2",
-                           names=self.names)
+        return FlashResult(
+            T, Ps, z, [p for p in (V, L) if p.beta > 0], kind="pure2", names=self.names
+        )
 
     def _uv_newton(self, z, u, v, T, P, init, tol):
         def ev(T_, lnP_, ini, same=False):
             r_ = self.flash_PT(math.exp(lnP_), T_, z, init=ini, same_phases=same)
             return r_, np.array([(r_.u - u) / (R * T_), math.log(r_.v / v)])
+
         try:
             x = np.array([T, math.log(P)])
             r, F = ev(x[0], x[1], init)
@@ -197,8 +205,17 @@ class StateFlashMixin:
                 r = self.flash_PT(math.exp(lnP), T, z, init=st["r"])
                 st["r"] = r
                 return math.log(r.v / v), r
-            x, fx, r, A, B = solve_monotone_1d(f, math.log(st["P"]), 0.3, math.log(1e-3), math.log(5e9),
-                                      incr=False, xtol=1e-13, ftol=1e-11)
+
+            x, fx, r, A, B = solve_monotone_1d(
+                f,
+                math.log(st["P"]),
+                0.3,
+                math.log(1e-3),
+                math.log(5e9),
+                incr=False,
+                xtol=1e-13,
+                ftol=1e-11,
+            )
             if abs(fx) > 1e-9:
                 r = self._blend_to(A, B, lambda q: q.v, v)
             st["P"] = r.P
@@ -207,7 +224,10 @@ class StateFlashMixin:
         def outer(T):
             r = inner(T)
             return (r.u - u) / (R * T0), r
-        T, fT, r, A, B = solve_monotone_1d(outer, T0, 2.0, 20.0, 3000.0, incr=True, xtol=1e-10, ftol=1e-10)
+
+        T, fT, r, A, B = solve_monotone_1d(
+            outer, T0, 2.0, 20.0, 3000.0, incr=True, xtol=1e-10, ftol=1e-10
+        )
         if abs(fT) > 1e-8:
             r = self._blend_to(A, B, lambda q: q.u, u)
         return r
@@ -231,8 +251,14 @@ class StateFlashMixin:
             else:
                 phases.append(q)
         phases = [p for p in phases if p.beta > 0]
-        r = FlashResult((1 - w) * ra.T + w * rb.T, (1 - w) * ra.P + w * rb.P, ra.z, phases,
-                        kind="blend", names=self.names)
+        r = FlashResult(
+            (1 - w) * ra.T + w * rb.T,
+            (1 - w) * ra.P + w * rb.P,
+            ra.z,
+            phases,
+            kind="blend",
+            names=self.names,
+        )
         r.info["blend"] = w
         return r
 
@@ -250,10 +276,24 @@ class StateFlashMixin:
         s_ = s0_i[iw] - R * math.log(P / P_REF) + AS.smolar_residual() + R * math.log(Z)
         cp0w = AS.cp0molar()
         name = "vapour" if q >= 0.5 else "aqueous"
-        return Phase(name=name, beta=1.0, x=self._ew.copy(), T=T, P=P, Z=Z, v=v, M=self.Mw[iw],
-                     h=h, u=h - P * v, s=s_, cp=AS.cpmolar() - cp0w + cp0_i[iw],
-                     cv=AS.cvmolar() - cp0w + cp0_i[iw], w=AS.speed_sound(),
-                     dPdT_v=float("nan"), dPdv_T=float("nan"))
+        return Phase(
+            name=name,
+            beta=1.0,
+            x=self._ew.copy(),
+            T=T,
+            P=P,
+            Z=Z,
+            v=v,
+            M=self.Mw[iw],
+            h=h,
+            u=h - P * v,
+            s=s_,
+            cp=AS.cpmolar() - cp0w + cp0_i[iw],
+            cv=AS.cvmolar() - cp0w + cp0_i[iw],
+            w=AS.speed_sound(),
+            dPdT_v=float("nan"),
+            dPdv_T=float("nan"),
+        )
 
     def water_PH(self, P, H, T_guess=None):
         """Isenthalpic flash of PURE water with IAPWS (H in J/mol): subcooled liquid,
@@ -268,7 +308,11 @@ class StateFlashMixin:
         # single phase: Newton on T on the correct side of T_sat
         Ts = L.T
         liquid = H <= L.h
-        T = min(T_guess or Ts - 1.0, Ts * (1 - 1e-5)) if liquid else max(T_guess or Ts + 1.0, Ts * (1 + 1e-5))
+        T = (
+            min(T_guess or Ts - 1.0, Ts * (1 - 1e-5))
+            if liquid
+            else max(T_guess or Ts + 1.0, Ts * (1 + 1e-5))
+        )
         for _ in range(60):
             kw = self._water_iapws(T, P)[1]
             dT = (H - kw["h"]) / kw["cp"]
@@ -304,6 +348,7 @@ class StateFlashMixin:
             st["r"] = r
             val = (r.h - X) / (R * 300.0) if which == "h" else (r.s - X) / R
             return val, r
+
         r0 = self.flash_PT(P, T0, z, init=init)
         cp = sum(p.beta * p.cp for p in r0.phases)
         d0 = ((r0.h - X) / cp) if which == "h" else (T0 * (r0.s - X) / cp)
@@ -311,7 +356,9 @@ class StateFlashMixin:
         if abs(dx0) < 1e-3:
             dx0 = 1e-3 if dx0 >= 0 else -1e-3
         st["r"] = r0
-        T, fT, r, A, B = solve_monotone_1d(f, T0, dx0, 20.0, 3000.0, incr=True, xtol=1e-10, ftol=1e-11)
+        T, fT, r, A, B = solve_monotone_1d(
+            f, T0, dx0, 20.0, 3000.0, incr=True, xtol=1e-10, ftol=1e-11
+        )
         if abs(fT) > 1e-8:
             r = self._blend_to(A, B, (lambda q: q.h) if which == "h" else (lambda q: q.s), X)
         return r

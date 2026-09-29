@@ -73,7 +73,7 @@ from fahts.thermo import PRMixture
 
 
 ROUGH = 45e-6
-Z_DENSE = 0.5          # below this vessel Z the fallback (ideal-gas) model is used
+Z_DENSE = 0.5  # below this vessel Z the fallback (ideal-gas) model is used
 
 _MODELS: dict = {}
 _WARM: dict = {}
@@ -81,13 +81,16 @@ _WARM: dict = {}
 
 def get_model(names, pseudo=None):
     """PRMixture for a component list (cached)."""
-    key = (tuple(n.upper() for n in names),
-           tuple(sorted((k, tuple(sorted(v.items()))) for k, v in (pseudo or {}).items())))
+    key = (
+        tuple(n.upper() for n in names),
+        tuple(sorted((k, tuple(sorted(v.items()))) for k, v in (pseudo or {}).items())),
+    )
     m = _MODELS.get(key)
     if m is None:
         m = PRMixture({n: 1.0 for n in names}, pseudo=pseudo)
         _MODELS[key] = m
     return m
+
 
 def _parse(y, names):
     if isinstance(y, dict):
@@ -99,9 +102,25 @@ def _parse(y, names):
     return list(names), x / x.sum()
 
 
-def mdot(P0, T0, y, Pb, Cd, d_orifice, line=None, model=None, names=None, pseudo=None,
-         nozzle="api520", expansion="borda", line_id="d-2t", rough=ROUGH, n_iso=12,
-         n_line=8, info=False):
+def mdot(
+    P0,
+    T0,
+    y,
+    Pb,
+    Cd,
+    d_orifice,
+    line=None,
+    model=None,
+    names=None,
+    pseudo=None,
+    nozzle="api520",
+    expansion="borda",
+    line_id="d-2t",
+    rough=ROUGH,
+    n_iso=12,
+    n_line=8,
+    info=False,
+):
     """Blowdown mass flow [kg/s] (see module docstring).
 
     Robustness: if the real-gas line/nozzle integration fails (e.g. a near-critical
@@ -119,8 +138,25 @@ def mdot(P0, T0, y, Pb, Cd, d_orifice, line=None, model=None, names=None, pseudo
     line_id   "d" (diameter = inner diameter) | "d-2t" (diameter = outer diameter)
     info      also return a dict: choke location, P_vc, P1, line pressure drop, ...
     """
-    args = (P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle, expansion,
-            line_id, rough, n_iso, n_line, info)
+    args = (
+        P0,
+        T0,
+        y,
+        Pb,
+        Cd,
+        d_orifice,
+        line,
+        model,
+        names,
+        pseudo,
+        nozzle,
+        expansion,
+        line_id,
+        rough,
+        n_iso,
+        n_line,
+        info,
+    )
     try:
         return _mdot_core(*args)
     except (ValueError, ZeroDivisionError, OverflowError, FloatingPointError):
@@ -134,15 +170,46 @@ def mdot(P0, T0, y, Pb, Cd, d_orifice, line=None, model=None, names=None, pseudo
         st0 = VapourState(m, x, T0, P0)
         ln = None
         if line:
-            ln = dict(d=line["d"] if line_id == "d-2t" else line["d"] + 2 * line.get("t", 0.0),
-                      t=line.get("t", 0.0), L=line["L"])
-        md = ideal_gas.mdot_orifice_line(P0, T0, Pb, st0.Z, st0.cp / st0.cv, st0.M, Cd, d_orifice,
-                                      ln, mu=m.viscosity(x, T0, st0.rho_mol), rough=rough)
+            ln = dict(
+                d=line["d"] if line_id == "d-2t" else line["d"] + 2 * line.get("t", 0.0),
+                t=line.get("t", 0.0),
+                L=line["L"],
+            )
+        md = ideal_gas.mdot_orifice_line(
+            P0,
+            T0,
+            Pb,
+            st0.Z,
+            st0.cp / st0.cv,
+            st0.M,
+            Cd,
+            d_orifice,
+            ln,
+            mu=m.viscosity(x, T0, st0.rho_mol),
+            rough=rough,
+        )
         return (md, dict(fallback=True, mdot=md)) if info else md
 
 
-def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle, expansion,
-               line_id, rough, n_iso, n_line, info):
+def _mdot_core(
+    P0,
+    T0,
+    y,
+    Pb,
+    Cd,
+    d_orifice,
+    line,
+    model,
+    names,
+    pseudo,
+    nozzle,
+    expansion,
+    line_id,
+    rough,
+    n_iso,
+    n_line,
+    info,
+):
     names, x = _parse(y, names)
     if model is None:
         model = get_model(names, pseudo)
@@ -154,7 +221,7 @@ def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle,
     out = dict(choke="none", P_vc=None, P1=None, P_exit=Pb, dP_line=0.0, mdot_orifice=0.0)
     if P0 <= Pb * 1.000001:
         return (0.0, out) if info else 0.0
-    A_o = 0.25 * math.pi * d_orifice ** 2
+    A_o = 0.25 * math.pi * d_orifice**2
     Pmin = max(Pb, 0.35 * P0)
     st0 = VapourState(model, x, T0, P0)
     if st0.Z < Z_DENSE:
@@ -204,7 +271,7 @@ def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle,
     key = (round(d_orifice, 6), round(D, 6), round(ln.L, 3), nozzle, expansion, line_id)
     span = P0 - Pstar
     hist = []
-    TOL = 3e-4               # in ln(L): mdot error << 1e-4 (d ln L / d ln mdot >> 1)
+    TOL = 3e-4  # in ln(L): mdot error << 1e-4 (d ln L / d ln mdot >> 1)
 
     def F(q):
         r = evaluate(Pstar + span * q)
@@ -224,7 +291,7 @@ def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle,
                 break
             q1 = q - f0 / sl
             if q1 <= 0.0:
-                break                                # orifice may control: full path
+                break  # orifice may control: full path
             q1 = min(q1, 0.9995)
             f1, r1 = F(q1)
             if f1 != f0 and (f1 - f0) / (q1 - q) > 0:
@@ -236,14 +303,14 @@ def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle,
         Lr, ch, Pe, md, P1 = evaluate(Pstar)
         if Lr >= ln.L or P1 <= Pb:
             out.update(choke="orifice" if orifice_choked else "none", P_vc=Pstar, mdot=md)
-            if info:       # line inlet pressure at this flow (lower P_vc, same flow)
+            if info:  # line inlet pressure at this flow (lower P_vc, same flow)
                 out.update(orifice_line_info(ln, noz, Cd * A_o, md, Pstar, Pb, Tg0, borda))
             return (md, out) if info else md
         # 2) bracket + Illinois
         a, fa = 0.0, math.log(max(Lr, 1e-9) / ln.L)
         b = warm[0] if warm is not None else 0.3
         fb, rb = F(b)
-        while fb < 0.0:                              # need reach > L at the upper end
+        while fb < 0.0:  # need reach > L at the upper end
             a, fa = b, fb
             b = b + 0.5 * (1.0 - b)
             fb, rb = F(b)
@@ -267,12 +334,17 @@ def _mdot_core(P0, T0, y, Pb, Cd, d_orifice, line, model, names, pseudo, nozzle,
                 side = 1
     # store root and local slope for the next call
     hs = sorted(hist, key=lambda t: abs(t[0] - c))[:2]
-    sl = (hs[0][1] - hs[1][1]) / (hs[0][0] - hs[1][0]) if len(hs) == 2 and hs[0][0] != hs[1][0] else None
+    sl = (
+        (hs[0][1] - hs[1][1]) / (hs[0][0] - hs[1][0])
+        if len(hs) == 2 and hs[0][0] != hs[1][0]
+        else None
+    )
     if sl is None or not sl > 0:
         sl = warm[1] if warm is not None else 5.0
     _WARM[key] = (min(max(c, 1e-4), 0.999), sl)
     c = Pstar + span * c
     Lr, ch, Pe, md, P1 = rc
-    out.update(choke="line_exit" if ch else "none", P_vc=c, P1=P1, P_exit=Pe,
-               dP_line=P1 - Pe, mdot=md)
+    out.update(
+        choke="line_exit" if ch else "none", P_vc=c, P1=P1, P_exit=Pe, dP_line=P1 - Pe, mdot=md
+    )
     return (md, out) if info else md

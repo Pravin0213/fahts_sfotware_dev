@@ -13,7 +13,7 @@ from fahts.materials.en1993_mechanical import NU
 
 
 def von_mises(sr, st, sz):
-    return np.sqrt(0.5 * ((sr - st)**2 + (st - sz)**2 + (sz - sr)**2))
+    return np.sqrt(0.5 * ((sr - st) ** 2 + (st - sz) ** 2 + (sz - sr) ** 2))
 
 
 def tresca(sr, st, sz):
@@ -24,6 +24,7 @@ def tresca(sr, st, sz):
 # ------------------------------------------------------------------
 # closed-form solutions
 # ------------------------------------------------------------------
+
 
 def membrane(p, a, t, s_ext):
     rm = a + 0.5 * t
@@ -43,7 +44,9 @@ def thermal_tg(r_nodes, e_nodes, r_eval, E, nu=NU):
     a, b = r_nodes[0], r_nodes[-1]
     rr = np.linspace(a, b, 2001)
     ee = np.interp(rr, r_nodes, e_nodes)
-    I = np.concatenate(([0.0], np.cumsum(0.5 * (ee[1:] * rr[1:] + ee[:-1] * rr[:-1]) * np.diff(rr))))
+    I = np.concatenate(
+        ([0.0], np.cumsum(0.5 * (ee[1:] * rr[1:] + ee[:-1] * rr[:-1]) * np.diff(rr)))
+    )
     Ib = I[-1]
     r = np.asarray(r_eval, float)
     Ir, er = np.interp(r, rr, I), np.interp(r, rr, ee)
@@ -52,8 +55,6 @@ def thermal_tg(r_nodes, e_nodes, r_eval, E, nu=NU):
     st = c / r**2 * ((r**2 + a**2) / (b**2 - a**2) * Ib + Ir - er * r**2)
     sz = c * (2 * Ib / (b**2 - a**2) - er)
     return sr, st, sz
-
-
 
 
 def membrane_stresses(P, D, t, ext_long_mpa):
@@ -65,6 +66,6 @@ def membrane_stresses(P, D, t, ext_long_mpa):
     s_h = Pg * rm / t
     s_l = Pg * rm / (2 * t) + ext_long_mpa
     s_r = -0.5 * Pg
-    vm = math.sqrt(0.5 * ((s_h - s_l)**2 + (s_l - s_r)**2 + (s_r - s_h)**2))
+    vm = math.sqrt(0.5 * ((s_h - s_l) ** 2 + (s_l - s_r) ** 2 + (s_r - s_h) ** 2))
     tr = max(s_h, s_l, s_r) - min(s_h, s_l, s_r)
     return s_h, s_l, vm, tr

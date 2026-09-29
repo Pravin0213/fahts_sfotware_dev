@@ -29,11 +29,18 @@ def crossing(time, s, allow):
 
 
 def columns(py):
-    return [c[:-len("_T1_C")] for c in py.columns if c.endswith("_T1_C")]
+    return [c[: -len("_T1_C")] for c in py.columns if c.endswith("_T1_C")]
 
 
-def stress_series(py: pd.DataFrame, seg: dict, mat: SteelTable, col: str = "background", *,
-                  x_nodes, n_el: int = 120) -> pd.DataFrame:
+def stress_series(
+    py: pd.DataFrame,
+    seg: dict,
+    mat: SteelTable,
+    col: str = "background",
+    *,
+    x_nodes,
+    n_el: int = 120,
+) -> pd.DataFrame:
     """Stress/allowable time series for one wall column.
 
     seg: case['seg'] (D, t, strength_mpa, stress_factor, stress_type, ext_long_mpa).
@@ -46,7 +53,11 @@ def stress_series(py: pd.DataFrame, seg: dict, mat: SteelTable, col: str = "back
     b = a + t
     s_ext = seg.get("ext_long_mpa", 0.0)
     F = mat.f_uts_at if seg.get("stress_type", "U") == "U" else mat.f_yield_at
-    sf = lambda T_C: seg["strength_mpa"] * seg.get("stress_factor", 1.0) * F(np.asarray(T_C) + 273.15)
+    sf = (
+        lambda T_C: seg["strength_mpa"]
+        * seg.get("stress_factor", 1.0)
+        * F(np.asarray(T_C) + 273.15)
+    )
     r_T = a + np.asarray(x_nodes, float) * (t / x_nodes[-1])
     Tcols = [f"{col}_T{i+1}_C" for i in range(len(x_nodes))]
     TT = py[Tcols].to_numpy()
@@ -60,11 +71,19 @@ def stress_series(py: pd.DataFrame, seg: dict, mat: SteelTable, col: str = "back
     for k in range(len(py)):
         p = max(py.P_bara.iat[k] * 1e5 - P_ATM, 0.0) / 1e6
         T = TT[k]
-        Tm = float(py[f"{col}_T_mean_C"].iat[k]) if f"{col}_T_mean_C" in py else float(trapezoid(T * r_T, r_T) / trapezoid(r_T, r_T))
+        Tm = (
+            float(py[f"{col}_T_mean_C"].iat[k])
+            if f"{col}_T_mean_C" in py
+            else float(trapezoid(T * r_T, r_T) / trapezoid(r_T, r_T))
+        )
         T_loc = np.interp(r_loc, r_T, T)
-        r = dict(Time=py.Time.iat[k], p_MPa=p, T_mean_C=Tm,
-                 allow_mean=float(sf(Tm)),
-                 allow_limit=float(trapezoid(sf(np.interp(rr, r_T, T)), rr) / t))
+        r = dict(
+            Time=py.Time.iat[k],
+            p_MPa=p,
+            T_mean_C=Tm,
+            allow_mean=float(sf(Tm)),
+            allow_limit=float(trapezoid(sf(np.interp(rr, r_T, T)), rr) / t),
+        )
         for L, TL in zip(locs, T_loc):
             r[f"T_{L}_C"] = TL
             r[f"allow_local_{L}"] = float(sf(TL))
@@ -85,7 +104,11 @@ def stress_series(py: pd.DataFrame, seg: dict, mat: SteelTable, col: str = "back
             r[f"lame_Tr_{L}"] = float(tresca(lr[i], lt[i], lz[i]))
             r[f"th_vM_{L}"] = float(von_mises(fr[i], ft[i], fz[i]))
             r[f"th_Tr_{L}"] = float(tresca(fr[i], ft[i], fz[i]))
-            r[f"th_hoop_{L}"], r[f"th_axial_{L}"], r[f"th_radial_{L}"] = float(ft[i]), float(fz[i]), float(fr[i])
+            r[f"th_hoop_{L}"], r[f"th_axial_{L}"], r[f"th_radial_{L}"] = (
+                float(ft[i]),
+                float(fz[i]),
+                float(fr[i]),
+            )
             r[f"tg_vM_{L}"] = float(von_mises(lr[i] + tr_[i], lt[i] + tt_[i], lz[i] + tz_[i]))
             r[f"tg_Tr_{L}"] = float(tresca(lr[i] + tr_[i], lt[i] + tt_[i], lz[i] + tz_[i]))
         rows.append(r)
@@ -106,18 +129,29 @@ def failure_times(ss: pd.DataFrame) -> list[dict]:
             tf = crossing(tm, s, al)
             if tf is not None and (best is None or tf < best):
                 best, where = tf, L
-        out.append(dict(variant=variant, allow_basis=basis, criterion=crit, t_fail_s=best, location=where))
+        out.append(
+            dict(variant=variant, allow_basis=basis, criterion=crit, t_fail_s=best, location=where)
+        )
 
     for crit, c in (("vonMises", "vM"), ("Tresca", "Tr")):
         add("membrane", "mean", crit, [("mem", ss[f"mem_{c}"], ss.allow_mean)])
         add("membrane", "local", crit, [("mem", ss[f"mem_{c}"], ss.allow_local_out)])
         add("limit", "through-wall avg", crit, [("mem", ss[f"mem_{c}"], ss.allow_limit)])
-        for v, pre, fac in (("lame", "lame", 1), ("thermal_elastic", "th", 1), ("thermal_tg", "tg", 1),
-                            ("thermal_2x", "th", 2)):
+        for v, pre, fac in (
+            ("lame", "lame", 1),
+            ("thermal_elastic", "th", 1),
+            ("thermal_tg", "tg", 1),
+            ("thermal_2x", "th", 2),
+        ):
             for basis in ("local", "mean"):
-                pairs = [(L, ss[f"{pre}_{c}_{L}"],
-                          fac * (ss[f"allow_local_{L}"] if basis == "local" else ss.allow_mean))
-                         for L in ("in", "mid", "out")]
+                pairs = [
+                    (
+                        L,
+                        ss[f"{pre}_{c}_{L}"],
+                        fac * (ss[f"allow_local_{L}"] if basis == "local" else ss.allow_mean),
+                    )
+                    for L in ("in", "mid", "out")
+                ]
                 add(v, basis, crit, pairs)
     return out
 

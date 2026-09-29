@@ -10,8 +10,10 @@ from fahts.common.constants import G_STANDARD
 # 3. WALL -> VAPOUR:  free convection (above) and film condensation
 # =============================================================================
 
-def condensation_flux(T_w: float, sat: dict, geometry: str = "horizontal_cylinder",
-                      L: float = 1.0) -> tuple[float, float, float]:
+
+def condensation_flux(
+    T_w: float, sat: dict, geometry: str = "horizontal_cylinder", L: float = 1.0
+) -> tuple[float, float, float]:
     """Laminar Nusselt (1916) film condensation of a saturated vapour on a wall
     colder than T_sat. Returns (q, dq/dT_w, h); q < 0 (heat flows fluid -> wall,
     sign convention: q > 0 is wall -> fluid).
@@ -33,7 +35,10 @@ def condensation_flux(T_w: float, sat: dict, geometry: str = "horizontal_cylinde
 
     def h_of(d):
         hfg = sat["h_fg"] + 0.68 * sat["cp_l"] * d
-        return C * (G_STANDARD * rl * (rl - rv) * sat["k_l"]**3 * hfg / (sat["mu_l"] * L * d))**0.25
+        return (
+            C
+            * (G_STANDARD * rl * (rl - rv) * sat["k_l"] ** 3 * hfg / (sat["mu_l"] * L * d)) ** 0.25
+        )
 
     h = h_of(dT)
     q = -h * dT

@@ -98,7 +98,11 @@ def split_phases(r, N, keep):
     for p in r.phases:
         nn = N * p.beta * np.asarray(p.x)
         if p.name in keep:
-            kn += nn; kH += N * p.beta * p.h; kV += N * p.beta * p.v
+            kn += nn
+            kH += N * p.beta * p.h
+            kV += N * p.beta * p.v
         else:
-            mn += nn; mH += N * p.beta * p.h; mV += N * p.beta * p.v
+            mn += nn
+            mH += N * p.beta * p.h
+            mV += N * p.beta * p.v
     return (kn, kH, kV), (mn, mH, mV)

@@ -10,9 +10,15 @@ from typing import Callable
 
 from scipy.optimize import brentq
 
-from fahts.process.inner_ht.boiling_correlations import (h_film_boiling, nb_cooper, nb_gorenflo,
-                                                         nb_mostinski, nb_rohsenow, q_chf,
-                                                         q_min_film)
+from fahts.process.inner_ht.boiling_correlations import (
+    h_film_boiling,
+    nb_cooper,
+    nb_gorenflo,
+    nb_mostinski,
+    nb_rohsenow,
+    q_chf,
+    q_min_film,
+)
 from fahts.process.inner_ht.natural_convection import q_free
 
 
@@ -20,19 +26,20 @@ from fahts.process.inner_ht.natural_convection import q_free
 @dataclass
 class BoilingModel:
     """Settings for the wall->liquid boiling curve."""
-    nucleate: str = "cooper"             # rohsenow | mostinski | cooper | gorenflo (see notes)
-    chf: str = "zuber"                   # zuber | large_plate | cylinder
-    film: str = "berenson"               # berenson | bromley
-    nc_config: str = "vertical_plate"    # liquid free convection correlation
-    blend_n: float = 3.0                 # Churchill-Usagi power for nc + nucleate
-    dT_onb: float = 0.0                  # onset-of-boiling wall superheat [K]
+
+    nucleate: str = "cooper"  # rohsenow | mostinski | cooper | gorenflo (see notes)
+    chf: str = "zuber"  # zuber | large_plate | cylinder
+    film: str = "berenson"  # berenson | bromley
+    nc_config: str = "vertical_plate"  # liquid free convection correlation
+    blend_n: float = 3.0  # Churchill-Usagi power for nc + nucleate
+    dT_onb: float = 0.0  # onset-of-boiling wall superheat [K]
     subcooled_chf: bool = True
-    C_sf: float = 0.013                  # Rohsenow
-    Rp_um: float = 1.0                   # Cooper
-    h0_gorenflo: float | None = None     # Gorenflo reference h0
+    C_sf: float = 0.013  # Rohsenow
+    Rp_um: float = 1.0  # Cooper
+    h0_gorenflo: float | None = None  # Gorenflo reference h0
     water: bool = False
-    eps_w: float = 0.8                   # wall emissivity (film boiling radiation)
-    D: float | None = None               # heater diameter (bromley / cylinder CHF)
+    eps_w: float = 0.8  # wall emissivity (film boiling radiation)
+    D: float | None = None  # heater diameter (bromley / cylinder CHF)
 
     def nucleate_fn(self, sat):
         if self.nucleate == "rohsenow":
@@ -46,8 +53,14 @@ class BoilingModel:
         raise ValueError(self.nucleate)
 
 
-def boiling_flux(T_w: float, T_l: float, sat: dict, liq_props: dict, L_nc: float,
-                 model: BoilingModel = BoilingModel()) -> tuple[float, str]:
+def boiling_flux(
+    T_w: float,
+    T_l: float,
+    sat: dict,
+    liq_props: dict,
+    L_nc: float,
+    model: BoilingModel = BoilingModel(),
+) -> tuple[float, str]:
     """Heat flux wall -> liquid pool [W/m2] and regime name.
 
     Regimes (e.g. Incropera & DeWitt ch. 10; Collier & Thome 1994 ch. 4):
@@ -76,12 +89,14 @@ def boiling_flux(T_w: float, T_l: float, sat: dict, liq_props: dict, L_nc: float
     if dT_sat <= dT_chf:
         q_nb = qnb_fn(dT_sat)
         n = model.blend_n
-        q = (max(q_nc, 0.0)**n + q_nb**n)**(1 / n)
+        q = (max(q_nc, 0.0) ** n + q_nb**n) ** (1 / n)
         return min(q, qmax) if q_nb < qmax else qmax, "nucleate"
     qmin = q_min_film(sat)
-    f_film = lambda d: h_film_boiling(sat, d, sat["T_sat"] + d, model.film, model.D, model.eps_w) * d
+    f_film = (
+        lambda d: h_film_boiling(sat, d, sat["T_sat"] + d, model.film, model.D, model.eps_w) * d
+    )
     dT_min = _solve_monotone(lambda d: f_film(d) - qmin, 1e-2, 2000.0)
-    if dT_min <= dT_chf * 1.05:            # near-critical: no distinct transition branch
+    if dT_min <= dT_chf * 1.05:  # near-critical: no distinct transition branch
         dT_min = dT_chf * 1.05
         qmin = min(qmin, f_film(dT_min))
     if dT_sat < dT_min:

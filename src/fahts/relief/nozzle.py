@@ -14,11 +14,13 @@ from fahts.relief.vapour_state import VapourState
 def isentrope_hdi(m, x, st0, Pmin, n=12):
     """Single-phase (metastable) PR vapour isentrope from st0 down to Pmin -> P, v."""
     P = st0.P * (Pmin / st0.P) ** np.linspace(0.0, 1.0, n)
-    v = np.empty(n); v[0] = st0.v
-    T = np.empty(n); T[0] = st0.T
+    v = np.empty(n)
+    v[0] = st0.v
+    T = np.empty(n)
+    T[0] = st0.T
     st = st0
     for i in range(1, n):
-        Tg = st.T + st.T * st.vT / st.cp * (P[i] - P[i - 1])     # dT/dP|_s = T v_T / cp
+        Tg = st.T + st.T * st.vT / st.cp * (P[i] - P[i - 1])  # dT/dP|_s = T v_T / cp
         Tg = min(max(Tg, 0.7 * st.T), st.T)
         for _ in range(4):
             st = VapourState(m, x, Tg, P[i])
@@ -36,12 +38,14 @@ def isentrope_hem(m, x, P0, T0, Pmin, n=12):
     """Equilibrium (HEM) isentrope by PS flashes -> P, v (per kg of mixture), T."""
     r0 = m.flash_PT(P0, T0, x)
     P = P0 * (Pmin / P0) ** np.linspace(0.0, 1.0, n)
-    v = [r0.v / r0.M]; T = [T0]
+    v = [r0.v / r0.M]
+    T = [T0]
     init = r0
     for Pi in P[1:]:
         r = m.flash_PS(Pi, r0.s, x, T_guess=T[-1], init=init)
         init = r
-        v.append(r.v / r.M); T.append(r.T)
+        v.append(r.v / r.M)
+        T.append(r.T)
     return P, np.array(v), np.array(T)
 
 
@@ -57,10 +61,10 @@ class Nozzle:
 
     def __init__(self, P, v, nfine=240):
         self.P0 = P[0]
-        self._lnP = np.log(P[::-1]).copy()            # ascending
+        self._lnP = np.log(P[::-1]).copy()  # ascending
         self._lnv = np.log(v[::-1]).copy()
         lp, lv = self._lnP, self._lnv
-        e = np.diff(lv) / np.diff(lp)                  # v ~ P^e on each segment
+        e = np.diff(lv) / np.diff(lp)  # v ~ P^e on each segment
         self._e = e
         # cumulative int v dP from P[i] up to P0 (ascending index)
         seg = np.empty(len(e))
@@ -75,21 +79,23 @@ class Nozzle:
         Gf = self._G_vec(Pf)
         i = int(np.argmax(Gf))
         if 0 < i < nfine - 1:
-            x = np.log(Pf[i - 1:i + 2]); y = Gf[i - 1:i + 2]
+            x = np.log(Pf[i - 1 : i + 2])
+            y = Gf[i - 1 : i + 2]
             c = np.polyfit(x - x[1], y, 2)
             xs = -c[1] / (2 * c[0]) if c[0] < 0 else 0.0
             xs = min(max(xs, x[0] - x[1]), x[2] - x[1])
             self.Pc = math.exp(x[1] + xs)
             self.Gc = max(float(np.polyval(c, xs)), float(Gf[i]))
             self.choked = True
-        else:                                          # max at Pmin: not choked above Pmin
+        else:  # max at Pmin: not choked above Pmin
             self.Pc, self.Gc, self.choked = float(Pf[i]), float(Gf[i]), False
 
     def _vdh_vec(self, P):
         lp = np.log(P)
         j = np.clip(np.searchsorted(self._lnP, lp) - 1, 0, len(self._e) - 1)
         e = self._e[j]
-        Pa = np.exp(self._lnP[j + 1]); va = np.exp(self._lnv[j + 1])
+        Pa = np.exp(self._lnP[j + 1])
+        va = np.exp(self._lnv[j + 1])
         v = va * (P / Pa) ** e
         part = va * Pa / (e + 1.0) * (1.0 - (P / Pa) ** (e + 1.0))
         return v, self._cum[j + 1] + part

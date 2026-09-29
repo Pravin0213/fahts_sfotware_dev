@@ -9,5 +9,4 @@ from fahts.fire.ambient import AmbientAuto, AmbientBC, h_ambient
 from fahts.fire.boundary import FireBC, PrescribedFluxBC
 from fahts.fire.guideline_fire import GuidelineFire
 
-__all__ = ["AmbientAuto", "AmbientBC", "FireBC", "GuidelineFire", "PrescribedFluxBC",
-           "h_ambient"]
+__all__ = ["AmbientAuto", "AmbientBC", "FireBC", "GuidelineFire", "PrescribedFluxBC", "h_ambient"]

@@ -22,14 +22,14 @@ class PSVOpening:
     def frac(self, P):
         s, f = self.s, self.open_frac
         Ps, Pr, Pf = s["p_set"], s["p_reseat"], s["p_full"]
-        if f <= 0.0:                                   # closed: opens only at Pset
+        if f <= 0.0:  # closed: opens only at Pset
             if P >= Ps:
                 f = min(max((P - Ps) / max(Pf - Ps, 1.0), 1e-6), 1.0) if s["type"] == 0 else 1.0
-        elif s["type"] == 0:                           # trapezoidal
+        elif s["type"] == 0:  # trapezoidal
             f = 0.0 if P < Pr else max(f, min((P - Ps) / max(Pf - Ps, 1.0), 1.0))
-        elif s["type"] == 1:                           # triangular
+        elif s["type"] == 1:  # triangular
             f = 1.0 if P >= Ps else max((P - Pr) / max(Ps - Pr, 1.0), 0.0)
-        else:                                          # square
+        else:  # square
             f = 0.0 if P < Pr else 1.0
         self.open_frac = f
         return f

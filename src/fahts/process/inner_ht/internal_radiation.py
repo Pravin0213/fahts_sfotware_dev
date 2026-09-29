@@ -18,7 +18,7 @@ def rad_network(T1, T3, Tg, A1, A3, e1, e3, eg):
     if A1 <= 0:
         return 0.0, 0.0, 0.0
     G1 = e1 * A1 / (1.0 - e1) if e1 < 1 else 1e12 * A1
-    G1g = A1 * eg                                   # surface 1 <-> gas (F1,all = 1)
+    G1g = A1 * eg  # surface 1 <-> gas (F1,all = 1)
     if A3 <= 0:
         if eg <= 0:
             return 0.0, 0.0, 0.0
@@ -26,7 +26,7 @@ def rad_network(T1, T3, Tg, A1, A3, e1, e3, eg):
         Q1 = G1 * (E1 - J1)
         return Q1, 0.0, Q1
     G3 = e3 * A3 / (1.0 - e3) if e3 < 1 else 1e12 * A3
-    G13 = A3 * tau                                  # A1 F13 tau = A3 F31 tau
+    G13 = A3 * tau  # A1 F13 tau = A3 F31 tau
     G3g = A3 * eg
     # node equations: G1(E1-J1) + G13(J3-J1) + G1g(Eg-J1) = 0 ; same for J3
     a11, a12, b1 = G1 + G13 + G1g, -G13, G1 * E1 + G1g * Eg

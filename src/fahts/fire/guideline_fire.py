@@ -26,10 +26,11 @@ from fahts.common.constants import SIGMA
 class GuidelineFire:
     """Net absorbed flux for a surface at T_s exposed to a fire whose incident
     heat load q_spec was defined at surface temperature T_ref."""
-    eps_flame: float        # flame emissivity
-    eps_surf: float         # vessel surface emissivity (absorptivity = emissivity)
-    h_flame: float          # flame-to-surface convection coefficient [W/m2K]
-    T_ref: float            # surface temperature at which q_spec applies [K]
+
+    eps_flame: float  # flame emissivity
+    eps_surf: float  # vessel surface emissivity (absorptivity = emissivity)
+    h_flame: float  # flame-to-surface convection coefficient [W/m2K]
+    T_ref: float  # surface temperature at which q_spec applies [K]
     t_air_mode: str = "balance"
     # "balance"   : T_f solved so that q_net(T_ref) = q_spec
     # "blackbody" : q_spec is incident black-body radiation, sigma*T_f^4 = q_spec

@@ -34,12 +34,20 @@ def h_ambient(T_s, T_env, D_out, spec):
     k, mu, rho, cp = _AIR.conductivity(), _AIR.viscosity(), _AIR.rhomass(), _AIR.cpmass()
     Pr = cp * mu / k
     Ra = G_ACC / Tf * abs(T_s - T_env) * D_out**3 * rho**2 * cp / (mu * k)
-    Nu_n = (0.60 + 0.387 * Ra**(1/6) / (1 + (0.559 / Pr)**(9/16))**(8/27))**2
+    Nu_n = (0.60 + 0.387 * Ra ** (1 / 6) / (1 + (0.559 / Pr) ** (9 / 16)) ** (8 / 27)) ** 2
     v = abs(spec) if abs(spec) < 50 else 0.0
     Re = rho * v * D_out / mu
-    Nu_f = 0.3 + 0.62 * Re**0.5 * Pr**(1/3) / (1 + (0.4 / Pr)**(2/3))**0.25 \
-        * (1 + (Re / 282000)**(5/8))**0.8 if Re > 0 else 0.0
-    return (Nu_n**3 + Nu_f**3)**(1/3) * k / D_out
+    Nu_f = (
+        0.3
+        + 0.62
+        * Re**0.5
+        * Pr ** (1 / 3)
+        / (1 + (0.4 / Pr) ** (2 / 3)) ** 0.25
+        * (1 + (Re / 282000) ** (5 / 8)) ** 0.8
+        if Re > 0
+        else 0.0
+    )
+    return (Nu_n**3 + Nu_f**3) ** (1 / 3) * k / D_out
 
 
 class AmbientAuto(AmbientBC):

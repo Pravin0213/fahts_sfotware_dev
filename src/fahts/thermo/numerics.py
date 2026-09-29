@@ -12,14 +12,16 @@ def cubic_roots(A: float, B: float) -> list:
     c1 = A - 3.0 * B * B - 2.0 * B
     c0 = -(A * B - B * B - B * B * B)
     q = (c2 * c2 - 3.0 * c1) / 9.0
-    r = (2.0 * c2 ** 3 - 9.0 * c2 * c1 + 27.0 * c0) / 54.0
+    r = (2.0 * c2**3 - 9.0 * c2 * c1 + 27.0 * c0) / 54.0
     q3 = q * q * q
     if r * r < q3:
         th = math.acos(max(-1.0, min(1.0, r / math.sqrt(q3))))
         s = -2.0 * math.sqrt(q)
-        roots = [s * math.cos(th / 3.0) - c2 / 3.0,
-                 s * math.cos((th + 2 * math.pi) / 3.0) - c2 / 3.0,
-                 s * math.cos((th - 2 * math.pi) / 3.0) - c2 / 3.0]
+        roots = [
+            s * math.cos(th / 3.0) - c2 / 3.0,
+            s * math.cos((th + 2 * math.pi) / 3.0) - c2 / 3.0,
+            s * math.cos((th - 2 * math.pi) / 3.0) - c2 / 3.0,
+        ]
     else:
         a_ = -math.copysign((abs(r) + math.sqrt(r * r - q3)) ** (1.0 / 3.0), r)
         b_ = q / a_ if a_ != 0.0 else 0.0

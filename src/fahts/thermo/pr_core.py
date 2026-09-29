@@ -9,7 +9,21 @@ import math
 import numpy as np
 
 from fahts.thermo.component_data import COMPONENTS, THETA
-from fahts.thermo.constants import ALIASES, B_VC_PR, D1, D2, DIPOLE, HEAVY_HC, KAPPA, KIJ, PARACHOR, P_REF, R, SQ2, T_REF
+from fahts.thermo.constants import (
+    ALIASES,
+    B_VC_PR,
+    D1,
+    D2,
+    DIPOLE,
+    HEAVY_HC,
+    KAPPA,
+    KIJ,
+    PARACHOR,
+    P_REF,
+    R,
+    SQ2,
+    T_REF,
+)
 from fahts.thermo.numerics import cubic_roots
 from fahts.thermo.pseudo import characterise_pseudo
 from fahts.thermo.results import Phase
@@ -18,8 +32,15 @@ from fahts.thermo.results import Phase
 class PRCore:
     """EOS core: component data, k_ij, ideal gas, cubic EOS, fugacities, phase props."""
 
-    def __init__(self, composition, pseudo=None, kij=None, volume_shift=False,
-                 free_water=True, water_model="iapws"):
+    def __init__(
+        self,
+        composition,
+        pseudo=None,
+        kij=None,
+        volume_shift=False,
+        free_water=True,
+        water_model="iapws",
+    ):
         pseudo = {k.upper(): v for k, v in (pseudo or {}).items()}
         if isinstance(composition, dict):
             items = [(k.upper(), float(v)) for k, v in composition.items()]
@@ -47,12 +68,21 @@ class PRCore:
         z = np.array(zs)
         self.z = z / z.sum() if z.sum() > 0 else z
         g = lambda key: np.array([d[key] for d in data], dtype=float)
-        self.Tc, self.Pc, self.omega, self.Mw, self.Vc = g("Tc"), g("Pc"), g("omega"), g("M"), g("Vc")
+        self.Tc, self.Pc, self.omega, self.Mw, self.Vc = (
+            g("Tc"),
+            g("Pc"),
+            g("omega"),
+            g("M"),
+            g("Vc"),
+        )
         self.Tb = g("Tb")
         self.is_pseudo = np.array([d["pseudo"] for d in data])
         w = self.omega
-        self._m = np.where(w <= 0.491, 0.37464 + 1.54226 * w - 0.26992 * w * w,
-                           0.379642 + 1.48503 * w - 0.164423 * w * w + 0.016666 * w ** 3)
+        self._m = np.where(
+            w <= 0.491,
+            0.37464 + 1.54226 * w - 0.26992 * w * w,
+            0.379642 + 1.48503 * w - 0.164423 * w * w + 0.016666 * w**3,
+        )
         self._ac = 0.45724 * (R * self.Tc) ** 2 / self.Pc
         self._sac = np.sqrt(self._ac)
         self._sTc = np.sqrt(self.Tc)
@@ -97,9 +127,10 @@ class PRCore:
         if self.iw is not None and self.water_model == "iapws":
             try:
                 import CoolProp.CoolProp as _CP
+
                 self._CP = _CP
                 self._ASw = _CP.AbstractState("HEOS", "Water")
-            except Exception:       # CoolProp not available -> PR water
+            except Exception:  # CoolProp not available -> PR water
                 self.water_model = "pr"
         self._nw = np.ones(n, bool)
         if self.iw is not None:
@@ -136,7 +167,7 @@ class PRCore:
             # Chueh & Prausnitz (1967) form, A = 0.18, B = 6 (Whitson & Brule 2000 Eq. 4.?)
             vi, vj = self.Vc[i] * 1e6, self.Vc[j] * 1e6
             t = 2.0 * (vi * vj) ** (1 / 6) / (vi ** (1 / 3) + vj ** (1 / 3))
-            return 0.18 * (1.0 - t ** 6)
+            return 0.18 * (1.0 - t**6)
         return 0.0
 
     def _z(self, z):
@@ -169,10 +200,22 @@ class PRCore:
             cpl = p0 + p1 * Tl + p2 * Tl * Tl
             cph = p0 + p1 * Th + p2 * Th * Th
             cp = cp + p0 + p1 * Tq + p2 * Tq * Tq
-            h = h + p0 * Tq + p1 * Tq ** 2 / 2 + p2 * Tq ** 3 / 3 \
-                + cpl * (np.minimum(T, Tl) - Tl) + cph * (np.maximum(T, Th) - Th)
-            s = s + p0 * np.log(Tq) + p1 * Tq + p2 * Tq ** 2 / 2 \
-                + cpl * np.log(np.minimum(T, Tl) / Tl) + cph * np.log(np.maximum(T, Th) / Th)
+            h = (
+                h
+                + p0 * Tq
+                + p1 * Tq**2 / 2
+                + p2 * Tq**3 / 3
+                + cpl * (np.minimum(T, Tl) - Tl)
+                + cph * (np.maximum(T, Th) - Th)
+            )
+            s = (
+                s
+                + p0 * np.log(Tq)
+                + p1 * Tq
+                + p2 * Tq**2 / 2
+                + cpl * np.log(np.minimum(T, Tl) / Tl)
+                + cph * np.log(np.maximum(T, Th) / Th)
+            )
         return cp, h - self._h_off, s - self._s_off
 
     def _ig(self, T):
@@ -213,7 +256,12 @@ class PRCore:
             return roots[-1]
         best, gbest = None, None
         for Z in (roots[0], roots[-1]):
-            g = Z - 1.0 - math.log(Z - B) - A / (2 * SQ2 * B) * math.log((Z + D1 * B) / (Z + D2 * B))
+            g = (
+                Z
+                - 1.0
+                - math.log(Z - B)
+                - A / (2 * SQ2 * B) * math.log((Z + D1 * B) / (Z + D2 * B))
+            )
             if gbest is None or g < gbest:
                 best, gbest = Z, g
         return best
@@ -257,9 +305,9 @@ class PRCore:
         g = math.log(1.0 - b / v)
         gB = -1.0 / vmb
         gV = b / (v * vmb)
-        gBB = -1.0 / vmb ** 2
-        gBV = 1.0 / vmb ** 2
-        gVV = -1.0 / vmb ** 2 + 1.0 / v ** 2
+        gBB = -1.0 / vmb**2
+        gBV = 1.0 / vmb**2
+        gVV = -1.0 / vmb**2 + 1.0 / v**2
         f = math.log(vd1 / vd2) / (R * b * (D1 - D2))
         fV = -1.0 / (R * vd1 * vd2)
         fB = -(f + v * fV) / b
@@ -276,11 +324,15 @@ class PRCore:
         FBD = -fB / T
         FBB = -gBB - D * fBB / T
         ob = np.outer(bi, Di)
-        Fij = FnB * (bi[:, None] + bi[None, :]) + FBD * (ob + ob.T) + FBB * np.outer(bi, bi) \
+        Fij = (
+            FnB * (bi[:, None] + bi[None, :])
+            + FBD * (ob + ob.T)
+            + FBB * np.outer(bi, bi)
             + FD * 2.0 * aij
+        )
         FiV = -gV + (-gBV - D * fBV / T) * bi + (-fV / T) * Di
         FVV = -gVV - D * fVV / T
-        dPdV = -RT * FVV - RT / v ** 2
+        dPdV = -RT * FVV - RT / v**2
         dPdn = -RT * FiV + RT / v
         J = Fij + 1.0 + np.outer(dPdn, dPdn) / (RT * dPdV)
         return lnphi, J, Z
@@ -318,7 +370,7 @@ class PRCore:
         xp = x[x > 0]
         s_ig = x @ s0_i - R * math.log(abs(P) / P_REF) - R * float(np.sum(xp * np.log(xp)))
         cv = x @ cp0_i - R + cvres
-        cp = cv - T * dPdT ** 2 / dPdv
+        cp = cv - T * dPdT**2 / dPdv
         h = x @ h0_i + hres
         s = s_ig + sres
         c = x @ self._c
@@ -329,9 +381,24 @@ class PRCore:
         w2 = -vt * vt / M * cp / cv * dPdv
         if name is None:
             name = self._label(x, v)
-        return Phase(name=name, beta=beta, x=x, T=T, P=P, Z=Z, v=vt, M=M, h=h, u=u, s=s,
-                     cp=cp, cv=cv, w=math.sqrt(w2) if w2 > 0 else float("nan"),
-                     dPdT_v=dPdT, dPdv_T=dPdv)
+        return Phase(
+            name=name,
+            beta=beta,
+            x=x,
+            T=T,
+            P=P,
+            Z=Z,
+            v=vt,
+            M=M,
+            h=h,
+            u=u,
+            s=s,
+            cp=cp,
+            cv=cv,
+            w=math.sqrt(w2) if w2 > 0 else float("nan"),
+            dPdT_v=dPdT,
+            dPdv_T=dPdv,
+        )
 
     def phase_props(self, x, T, P, phase=None):
         """Single-phase properties at (T,P) for composition x (root: None/'L'/'V')."""

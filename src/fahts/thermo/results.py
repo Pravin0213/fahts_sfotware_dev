@@ -6,8 +6,27 @@ from __future__ import annotations
 
 class Phase:
     """One equilibrium phase.  Molar properties per mol of this phase."""
-    __slots__ = ("name", "beta", "x", "T", "P", "Z", "v", "M", "h", "u", "s", "cp", "cv",
-                 "w", "dPdT_v", "dPdv_T", "mu", "k")
+
+    __slots__ = (
+        "name",
+        "beta",
+        "x",
+        "T",
+        "P",
+        "Z",
+        "v",
+        "M",
+        "h",
+        "u",
+        "s",
+        "cp",
+        "cv",
+        "w",
+        "dPdT_v",
+        "dPdv_T",
+        "mu",
+        "k",
+    )
 
     def __init__(self, **kw):
         self.mu = None
@@ -22,11 +41,11 @@ class Phase:
         return p
 
     @property
-    def rho(self):          # kg/m3
+    def rho(self):  # kg/m3
         return self.M / self.v
 
     @property
-    def rho_mol(self):      # mol/m3
+    def rho_mol(self):  # mol/m3
         return 1.0 / self.v
 
     @property
@@ -50,8 +69,10 @@ class Phase:
         return self.cv / self.M
 
     def __repr__(self):
-        return (f"<Phase {self.name} beta={self.beta:.6g} rho={self.rho:.4g} kg/m3 "
-                f"M={self.M * 1e3:.4g} g/mol Z={self.Z:.5g}>")
+        return (
+            f"<Phase {self.name} beta={self.beta:.6g} rho={self.rho:.4g} kg/m3 "
+            f"M={self.M * 1e3:.4g} g/mol Z={self.Z:.5g}>"
+        )
 
 
 class FlashResult:
@@ -147,8 +168,10 @@ class FlashResult:
         s = [f"T={self.T:.3f} K  P={self.P / 1e5:.5g} bar  phases={self.phase_names}"]
         for p in self.phases:
             comp = " ".join(f"{n}={x:.4g}" for n, x in zip(self.names, p.x) if x > 1e-8)
-            s.append(f"  {p.name:8s} beta={p.beta:.5f} rho={p.rho:9.3f} M={p.M * 1e3:8.3f} "
-                     f"Z={p.Z:.4f}  {comp}")
+            s.append(
+                f"  {p.name:8s} beta={p.beta:.5f} rho={p.rho:9.3f} M={p.M * 1e3:8.3f} "
+                f"Z={p.Z:.4f}  {comp}"
+            )
         return "\n".join(s)
 
     def __repr__(self):

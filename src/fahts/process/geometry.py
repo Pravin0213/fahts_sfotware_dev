@@ -54,10 +54,10 @@ def _head_area(R: float, a: float) -> float:
         return math.pi * R**2
     if abs(a - R) < 1e-12 * R:
         return 2 * math.pi * R**2
-    if a < R:   # oblate
-        e = math.sqrt(1 - (a / R)**2)
+    if a < R:  # oblate
+        e = math.sqrt(1 - (a / R) ** 2)
         return math.pi * R**2 + math.pi * a**2 / (2 * e) * math.log((1 + e) / (1 - e))
-    e = math.sqrt(1 - (R / a)**2)   # prolate
+    e = math.sqrt(1 - (R / a) ** 2)  # prolate
     return math.pi * R**2 + math.pi * R * a / e * math.asin(e)
 
 
@@ -67,7 +67,13 @@ def _cap_area_vertical(R: float, a: float, h: float) -> float:
         return math.pi * R**2 if h > 0 else 0.0
     h = min(max(h, 0.0), a)
     t1 = math.acos(1 - h / a)
-    f = lambda t: 2 * math.pi * R * math.sin(t) * math.sqrt(a**2 * math.sin(t)**2 + R**2 * math.cos(t)**2)
+    f = (
+        lambda t: 2
+        * math.pi
+        * R
+        * math.sin(t)
+        * math.sqrt(a**2 * math.sin(t) ** 2 + R**2 * math.cos(t) ** 2)
+    )
     return quad(f, 0.0, t1)[0]
 
 
@@ -80,6 +86,7 @@ class VesselGeometry:
     orientation : "horizontal" | "vertical"
     head     : "flat" | "hemispherical" | "ellipsoidal" (2:1) | float depth a [m]
     """
+
     D: float
     L: float
     orientation: str = "horizontal"
@@ -107,10 +114,12 @@ class VesselGeometry:
             return A_seg * L + V_heads
         # vertical
         V_head = 2.0 / 3.0 * math.pi * R**2 * a
+
         def v_bottom(y):
             if y <= a:
                 return math.pi * R**2 * y**2 * (3 * a - y) / (3 * a**2) if a > 0 else 0.0
             return V_head + math.pi * R**2 * (y - a)
+
         if h <= a + L:
             return v_bottom(h)
         return self.V_total - v_bottom(self.H - h)
@@ -126,7 +135,7 @@ class VesselGeometry:
         y = h if h <= a + L else self.H - h
         if y >= a:
             return math.pi * R**2
-        return math.pi * R**2 * (1 - ((a - y) / a)**2)
+        return math.pi * R**2 * (1 - ((a - y) / a) ** 2)
 
     def wetted_area(self, h: float) -> float:
         """Inner wall area below level h [m2]."""
@@ -187,11 +196,15 @@ class VesselGeometry:
             # rectangle w x L plus two half-ellipses (Ramanujan perimeter)
             b = a * w / (2 * R)
             ah = w / 2
-            per_ell = math.pi * (3 * (ah + b) - math.sqrt((3 * ah + b) * (ah + 3 * b))) if (ah + b) > 0 else 0
+            per_ell = (
+                math.pi * (3 * (ah + b) - math.sqrt((3 * ah + b) * (ah + 3 * b)))
+                if (ah + b) > 0
+                else 0
+            )
             P = 2 * L + per_ell
             return Ai / P
         Ai = self.interface_area(h)
-        return math.sqrt(Ai / math.pi) / 2.0      # disc: A/P = r/2
+        return math.sqrt(Ai / math.pi) / 2.0  # disc: A/P = r/2
 
     def liquid_char_length(self, h: float) -> float:
         """Height of the heated wetted wall used for wall->liquid free
@@ -205,8 +218,9 @@ class VesselGeometry:
 @dataclass
 class LayerState:
     """Geometric description of stacked free-water + hydrocarbon layers."""
+
     h_water: float
-    h_liquid: float            # top of hydrocarbon liquid (>= h_water)
+    h_liquid: float  # top of hydrocarbon liquid (>= h_water)
     A_wet_water: float
     A_wet_oil: float
     A_wet_gas: float
@@ -224,10 +238,18 @@ def layers(geom: VesselGeometry, V_water: float, V_oil: float) -> LayerState:
     hl = geom.level(V_water + V_oil)
     Aw = geom.wetted_area(hw)
     Al = geom.wetted_area(hl)
-    return LayerState(hw, hl, Aw, Al - Aw, geom.A_total - Al,
-                      geom.interface_area(hw) if V_oil > 0 else 0.0,
-                      geom.interface_area(hl),
-                      V_water, V_oil, geom.V_total - V_water - V_oil)
+    return LayerState(
+        hw,
+        hl,
+        Aw,
+        Al - Aw,
+        geom.A_total - Al,
+        geom.interface_area(hw) if V_oil > 0 else 0.0,
+        geom.interface_area(hl),
+        V_water,
+        V_oil,
+        geom.V_total - V_water - V_oil,
+    )
 
 
 def layers_from_levels(geom: VesselGeometry, h_water: float, h_liquid: float) -> LayerState:

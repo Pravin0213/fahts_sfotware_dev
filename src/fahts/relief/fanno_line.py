@@ -28,9 +28,9 @@ class FannoLine:
             s = VapourState(m, x, T, P)
             F = s.h + 0.5 * G2 * s.v * s.v - h0
             dT = -F / (s.cp + G2 * s.v * s.vT)
-            dT = max(min(dT, 0.1 * T), -0.1 * T)    # damped (near-critical states)
+            dT = max(min(dT, 0.1 * T), -0.1 * T)  # damped (near-critical states)
             T += dT
-            if abs(dT) < 5e-3:          # 5 mK: relative error in v < 2e-5
+            if abs(dT) < 5e-3:  # 5 mK: relative error in v < 2e-5
                 break
         dTdP = -((s.v - s.T * s.vT) + G2 * s.v * s.vP) / (s.cp + G2 * s.v * s.vT)
         phi = 1.0 + G2 * (s.vT * dTdP + s.vP)
@@ -47,7 +47,7 @@ class FannoLine:
         for _ in range(12):
             s, phi, dTdP = self.fstate(P1, G2, Tg)
             F = P1 + G2 * s.v - c
-            if phi <= 0.05:              # no subsonic solution close by: step up
+            if phi <= 0.05:  # no subsonic solution close by: step up
                 P1 = 0.5 * (P1 + c)
                 Tg = s.T
                 continue
@@ -88,7 +88,7 @@ def fanno_F(M, k):
 
 def line_clearly_open(P0, T0, P1, Pb, md, st0, ln, margin=1.5):
     k = st0.cp / st0.cv
-    ZRT0 = st0.P * st0.v                                   # Z R T0 per kg
+    ZRT0 = st0.P * st0.v  # Z R T0 per kg
     G = md / ln.A
     # inlet Mach from G = P M sqrt(k/(Z R T)), T = T0/(1+(k-1)/2 M^2)
     a, b = 1e-9, 1.0
@@ -106,7 +106,7 @@ def line_clearly_open(P0, T0, P1, Pb, md, st0, ln, margin=1.5):
     pr = lambda M: math.sqrt((k + 1) / (2 + (k - 1) * M * M)) / M
     target = pr(M1) * Pb / P1
     f = colebrook(G * ln.D / ln.mu, ln.rough / ln.D)
-    if target <= 1.0:                                      # chokes before reaching Pb
+    if target <= 1.0:  # chokes before reaching Pb
         return fanno_F(M1, k) * ln.D / f > margin * ln.L
     a, b = M1, 1.0
     for _ in range(50):

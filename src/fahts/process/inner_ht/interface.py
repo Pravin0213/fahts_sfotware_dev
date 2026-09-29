@@ -27,8 +27,16 @@ from fahts.process.inner_ht.natural_convection import h_free
 # Liquid energy loses Q_l->i + mdot h_l,sat ; gas gains Q_i->g + mdot h_v,sat.
 
 
-def interface_exchange(T_g: float, T_l: float, sat: dict, gas_props: dict, liq_props: dict,
-                       A_i: float, L_star: float, h_override: tuple | None = None) -> dict:
+def interface_exchange(
+    T_g: float,
+    T_l: float,
+    sat: dict,
+    gas_props: dict,
+    liq_props: dict,
+    A_i: float,
+    L_star: float,
+    h_override: tuple | None = None,
+) -> dict:
     """Heat and mass exchange across the free surface. Returns
     {"Q_li","Q_ig","mdot_evap","h_li","h_gi","T_i"} (W, W, kg/s, W/m2K)."""
     T_i = sat["T_sat"]
@@ -41,5 +49,6 @@ def interface_exchange(T_g: float, T_l: float, sat: dict, gas_props: dict, liq_p
         h_li = h_free(liq_props, T_l - T_i, L_star, "hot_up" if T_l > T_i else "hot_down")
     Q_li = h_li * A_i * (T_l - T_i)
     Q_ig = h_gi * A_i * (T_i - T_g)
-    return dict(Q_li=Q_li, Q_ig=Q_ig, mdot_evap=(Q_li - Q_ig) / sat["h_fg"],
-                h_li=h_li, h_gi=h_gi, T_i=T_i)
+    return dict(
+        Q_li=Q_li, Q_ig=Q_ig, mdot_evap=(Q_li - Q_ig) / sat["h_fg"], h_li=h_li, h_gi=h_gi, T_i=T_i
+    )

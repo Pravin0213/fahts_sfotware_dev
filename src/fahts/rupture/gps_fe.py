@@ -17,15 +17,19 @@ class GeneralizedPlaneStrainFE:
     Units MPa, m (forces MN per m length)."""
 
     def __init__(self, a, b, n_el=120, nu=NU):
-        s = 0.5 * (1 - np.cos(np.linspace(0, np.pi, n_el + 1)))   # graded to both surfaces
+        s = 0.5 * (1 - np.cos(np.linspace(0, np.pi, n_el + 1)))  # graded to both surfaces
         self.r = a + (b - a) * s
         self.a, self.b, self.nu, self.n = a, b, nu, n_el
         g = 1 / math.sqrt(3)
         r1, r2 = self.r[:-1], self.r[1:]
         self.h = r2 - r1
-        self.rg = np.stack([0.5 * (r1 + r2) - 0.5 * g * self.h, 0.5 * (r1 + r2) + 0.5 * g * self.h])  # (2, n)
+        self.rg = np.stack(
+            [0.5 * (r1 + r2) - 0.5 * g * self.h, 0.5 * (r1 + r2) + 0.5 * g * self.h]
+        )  # (2, n)
         nu_ = nu
-        self.D1 = np.array([[1 - nu_, nu_, nu_], [nu_, 1 - nu_, nu_], [nu_, nu_, 1 - nu_]]) / ((1 + nu_) * (1 - 2 * nu_))
+        self.D1 = np.array([[1 - nu_, nu_, nu_], [nu_, 1 - nu_, nu_], [nu_, nu_, 1 - nu_]]) / (
+            (1 + nu_) * (1 - 2 * nu_)
+        )
 
     def _B(self, e, r):
         r1, h = self.r[e], self.h[e]
@@ -75,6 +79,7 @@ class GeneralizedPlaneStrainFE:
                 eps = np.array([er, ui / r, ez]) - e_fn(r)
                 out.append(E_fn(r) * self.D1 @ eps)
             return np.array(out).T
+
         return stress
 
     def solve_vec(self, r_T, T_C, T_ref_C, p, F_z):

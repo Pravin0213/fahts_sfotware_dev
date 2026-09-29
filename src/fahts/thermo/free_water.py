@@ -54,9 +54,19 @@ class FreeWaterMixin:
         cp0w = AS.cp0molar()
         cp = AS.cpmolar() - cp0w + cp0_i[iw]
         cv = AS.cvmolar() - cp0w + cp0_i[iw]
-        kw = dict(Z=Z, v=v, M=self.Mw[iw], h=h, u=h - P * v, s=s, cp=cp, cv=cv,
-                  w=AS.speed_sound(), dPdT_v=float("nan"), dPdv_T=AS.first_partial_deriv(
-                      CP_.iP, CP_.iDmolar, CP_.iT) * (-1.0 / v ** 2))
+        kw = dict(
+            Z=Z,
+            v=v,
+            M=self.Mw[iw],
+            h=h,
+            u=h - P * v,
+            s=s,
+            cp=cp,
+            cv=cv,
+            w=AS.speed_sound(),
+            dPdT_v=float("nan"),
+            dPdv_T=AS.first_partial_deriv(CP_.iP, CP_.iDmolar, CP_.iT) * (-1.0 / v**2),
+        )
         out = (lnphi, kw)
         self._wcache = (T, P, out)
         return out
@@ -159,8 +169,9 @@ class FreeWaterMixin:
             Kn_n = np.exp(lnphiL[nw] - lnphiV[nw])
             xw_n = math.exp(lnfw0 - lnP - lnphiL[iw])
             yw_n = math.exp(lnfw0 - lnP - lnphiV[iw])
-            err = max(np.abs(np.log(Kn_n / Kn)).max(), abs(math.log(xw_n / xw)),
-                      abs(math.log(yw_n / yw)))
+            err = max(
+                np.abs(np.log(Kn_n / Kn)).max(), abs(math.log(xw_n / xw)), abs(math.log(yw_n / yw))
+            )
             Kn, xw, yw = Kn_n, min(xw_n, 0.999), min(yw_n, 0.999)
             if np.abs(np.log(Kn)).max() < 1e-4:
                 return None
@@ -197,7 +208,7 @@ class FreeWaterMixin:
             lfV = np.log(y) + lnphiV
             lfL = np.log(x) + lnphiL
             g = np.empty(n + 1)
-            g[:n - 1] = (lfV - lfL)[idx]
+            g[: n - 1] = (lfV - lfL)[idx]
             g[n - 1] = lfV[iw] + lnP - lnfw0
             g[n] = lfL[iw] + lnP - lnfw0
             err = np.abs(g).max()
@@ -210,9 +221,9 @@ class FreeWaterMixin:
             FL = (np.diag(1.0 / x) - 1.0 + JL) / nL
             Jm = np.zeros((n + 1, n + 1))
             FLc = FL.copy()
-            FLc[:, iw] = 0.0                     # l_w does not depend on v_w
-            Jm[:n - 1, :n] = (FV + FLc)[idx]
-            Jm[:n - 1, n] = -FL[idx, iw]
+            FLc[:, iw] = 0.0  # l_w does not depend on v_w
+            Jm[: n - 1, :n] = (FV + FLc)[idx]
+            Jm[: n - 1, n] = -FL[idx, iw]
             Jm[n - 1, :n] = FV[iw]
             Jm[n, :n] = -FLc[iw]
             Jm[n, n] = FL[iw, iw]
@@ -269,7 +280,9 @@ class FreeWaterMixin:
                 return three(res)
         single = self._fw_single(zf, T, P, lnfw0)
         if single is None:
-            return self._flash_std(z, T, P, init if (init is not None and init.kind == "std2") else None)
+            return self._flash_std(
+                z, T, P, init if (init is not None and init.kind == "std2") else None
+            )
         y, bHC, bW, lnphiy, Zy = single
         if same and init is not None and init.kind == "fw1":
             ph = self._phase(y, T, P, Z=Zy, beta=bHC)
@@ -277,8 +290,9 @@ class FreeWaterMixin:
                 ph.name = "liquid"
             return pack([ph], bW, "fw1")
         extra = [p.x for p in init.phases if p.name != "aqueous"] if init is not None else ()
-        stable, w, tm, Zw = self.stability(y, T, P, lnphi_z=lnphiy, extra_trials=extra,
-                                           skip_aqueous=True)
+        stable, w, tm, Zw = self.stability(
+            y, T, P, lnphi_z=lnphiy, extra_trials=extra, skip_aqueous=True
+        )
         if stable:
             ph = self._phase(y, T, P, Z=Zy, beta=bHC)
             if ph.name == "aqueous":
@@ -290,8 +304,11 @@ class FreeWaterMixin:
             return three(res)
         if res is not None and res["bW"] <= 0:
             std = self._flash_std(z, T, P)
-            fw_ok = all(math.log(max(p.x[iw], 1e-300)) + self._lnphi(p.x, T, P, Z=p.Z)[0][iw]
-                        + math.log(P) <= lnfw0 + 1e-8 for p in std.phases)
+            fw_ok = all(
+                math.log(max(p.x[iw], 1e-300)) + self._lnphi(p.x, T, P, Z=p.Z)[0][iw] + math.log(P)
+                <= lnfw0 + 1e-8
+                for p in std.phases
+            )
             if fw_ok:
                 return std
         ph = self._phase(y, T, P, Z=Zy, beta=bHC)

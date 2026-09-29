@@ -131,7 +131,7 @@ class FlashPTMixin:
             return self._result1(z, T, P, Zz)
         K = w / zf if Zw > Zz else zf / w
         res = self._flash2(zf, T, P, K)
-        if res is None:   # try the other trial type once (Wilson)
+        if res is None:  # try the other trial type once (Wilson)
             res = self._flash2(zf, T, P, self._wilson(T, P))
         if res is None:
             r = self._result1(z, T, P, Zz)
@@ -139,14 +139,13 @@ class FlashPTMixin:
             return r
         return res
 
-
     # ------------------------------------------------------------- public flashes
     def flash_PT(self, P, T, z=None, init=None, same_phases=False):
         """Isothermal flash.  init: previous FlashResult for warm start.
         same_phases=True (internal, for derivatives): assume init's phase set, no
         stability test."""
         z = self._z(z)
-        if (self.iw is not None and self.free_water and 1e-12 < z[self.iw] < 1.0 - 1e-12):
+        if self.iw is not None and self.free_water and 1e-12 < z[self.iw] < 1.0 - 1e-12:
             return self._flash_fw(z, T, P, init, same_phases)
         if self.iw is not None and self.free_water and z[self.iw] >= 1.0 - 1e-12:
             # pure water: use the same aqueous (IAPWS) model as the free-water phase, so a

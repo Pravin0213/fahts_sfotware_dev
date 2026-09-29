@@ -15,13 +15,14 @@ import numpy as np
 @dataclass
 class SteelTable:
     """Temperature-dependent steel properties (T in K), linear interpolation."""
+
     name: str
     T: np.ndarray
-    cp: np.ndarray          # J/kg/K
-    k: np.ndarray           # W/m/K
-    rho: float              # kg/m3 (constant)
-    f_yield: np.ndarray     # yield retention factor
-    f_uts: np.ndarray       # UTS retention factor
+    cp: np.ndarray  # J/kg/K
+    k: np.ndarray  # W/m/K
+    rho: float  # kg/m3 (constant)
+    f_yield: np.ndarray  # yield retention factor
+    f_uts: np.ndarray  # UTS retention factor
 
     def cp_at(self, T):
         return np.interp(T, self.T, self.cp)

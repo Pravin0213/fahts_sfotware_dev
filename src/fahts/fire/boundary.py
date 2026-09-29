@@ -13,7 +13,12 @@ class FireBC:
     (normally AmbientBC)."""
 
     def __init__(self, fire: GuidelineFire, t_series, q_series, after=None):
-        self.fire, self.t, self.q, self.after = fire, np.asarray(t_series), np.asarray(q_series), after
+        self.fire, self.t, self.q, self.after = (
+            fire,
+            np.asarray(t_series),
+            np.asarray(q_series),
+            after,
+        )
         self.T_flame = None
 
     def __call__(self, T_s, t):

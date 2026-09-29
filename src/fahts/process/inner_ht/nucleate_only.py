@@ -17,4 +17,4 @@ def nucleate_only_flux(T_w, T_l, sat, liq_props, L_nc, n_blend=3.0):
     if dT <= 0.0:
         return q_nc
     q_nb = nb_cooper(sat)(dT)
-    return (max(q_nc, 0.0) ** n_blend + q_nb ** n_blend) ** (1.0 / n_blend)
+    return (max(q_nc, 0.0) ** n_blend + q_nb**n_blend) ** (1.0 / n_blend)

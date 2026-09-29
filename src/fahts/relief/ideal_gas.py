@@ -78,13 +78,15 @@ def mdot_orifice_line(P0, T0, Pb, Z, k, M, Cd, d_orif, line=None, mu=1.2e-5, rou
             else:
                 hi = mid
         P1 = hi
+
         # line inlet Mach number from G = P M sqrt(k / (Z R T)), T = T0 / (1 + (k-1)/2 M^2)
         def g_of(Mach):
             T = T0 / (1 + 0.5 * (k - 1) * Mach**2)
             return P1 * Mach * math.sqrt(k / (Z * R * T))
+
         a, b = 1e-6, 1.0
         if g_of(b) < G:
-            return None                                   # inlet would need M > 1
+            return None  # inlet would need M > 1
         for _ in range(60):
             c = 0.5 * (a + b)
             if g_of(c) < G:
@@ -96,7 +98,7 @@ def mdot_orifice_line(P0, T0, Pb, Z, k, M, Cd, d_orif, line=None, mu=1.2e-5, rou
         fLD = colebrook(Re, rough / D) * line["L"] / D
         F1 = fanno_F(M1, k)
         if F1 < fLD:
-            return None                                   # chokes inside the line
+            return None  # chokes inside the line
         F2 = F1 - fLD
         # exit Mach from F(M2) = F2 (subsonic branch, F decreasing in M)
         a, b = M1, 1.0

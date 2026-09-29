@@ -2,14 +2,15 @@
 
 ## Current State
 
-Non-GUI (2026-09-29): **944 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`).
+Non-GUI (2026-09-30): **995 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
+54 golden tests skipped unless `--golden`.
 GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
 
 ```bash
 cd /home/oslprb/vessfire_heatsolver
 python -m pytest tests/ -q                        # all tests (golden tests skipped)
 python -m pytest tests/test_foo.py                # single file
-python -m pytest tests/regression --golden -q     # process-model goldens (~4 min)
+python -m pytest tests/regression --golden -q     # process-model goldens (~4 min/impl)
 ```
 
 Run tests before declaring any task done. Both `model_file.fem` and `model_t1.fem`
@@ -43,6 +44,13 @@ must parse cleanly — smoke tests for both exist.
 
 ---
 
+## Process-model unit tests (`tests/unit/`)
+
+- `tests/unit/<package>/test_equivalence_legacy.py` — each ported package is bit-identical with
+  `legacy/vfpy` (via `tests/legacy_ref.py`); synthetic steel table fixture in `tests/unit/conftest.py`
+  (no proprietary data needed).
+- `tests/unit/test_layering.py` — physics packages only import the layers below them.
+
 ## Golden Regression Tests — process model (`tests/regression/process/`)
 
 Freeze the behaviour of the original vfpy vessel model (`legacy/vfpy/`) so its port into
@@ -52,8 +60,8 @@ Freeze the behaviour of the original vfpy vessel model (`legacy/vfpy/`) so its p
   branch (H2/CH4/LPG/pseudo/free water/retrograde; fire, BDV, PSV, ambient, rupture)
 - `golden/` — 18 runs: time series + rupture table per (case, profile, duration);
   `manifest.json` has library versions and the legacy/DB hashes
-- `harness.py` — `IMPLEMENTATIONS = {"legacy": ...}`; add the ported implementation there
-  and the same test checks it against the same goldens
+- `harness.py` — `IMPLEMENTATIONS`: `legacy` (frozen vfpy), `hybrid` (legacy driver on ported
+  modules, clean subprocess), `fahts` (product code only). All must match the same goldens.
 - Tolerance: `RTOL = 1e-6` of each column's magnitude. Never loosen it or regenerate goldens
   (`python -m tests.regression.process.generate`) to make a port pass — find the difference.
 - Needs CoolProp and the local material DB `data/reference/vessfire/vessfire.db` (gitignored,

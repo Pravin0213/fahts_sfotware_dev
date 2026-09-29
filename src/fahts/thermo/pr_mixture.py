@@ -83,8 +83,15 @@ from fahts.thermo.stability import StabilityMixin
 from fahts.thermo.transport import TransportMixin
 
 
-class PRMixture(FlashPTMixin, StateFlashMixin, FreeWaterMixin, StabilityMixin,
-                SaturationMixin, TransportMixin, PRCore):
+class PRMixture(
+    FlashPTMixin,
+    StateFlashMixin,
+    FreeWaterMixin,
+    StabilityMixin,
+    SaturationMixin,
+    TransportMixin,
+    PRCore,
+):
     """Peng-Robinson mixture model.
 
     composition : dict name -> mole fraction (VessFire names; pseudo names allowed)
@@ -99,4 +106,3 @@ class PRMixture(FlashPTMixin, StateFlashMixin, FreeWaterMixin, StabilityMixin,
                   reference state; its fugacity sets the water content of the HC phases)
                   or "pr" (Peng-Robinson pure water; liquid density ~15 % low).
     """
-

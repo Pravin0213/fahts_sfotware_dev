@@ -24,23 +24,22 @@ class WallColumn:
     surface, control-volume faces half way between nodes.
     """
 
-    def __init__(self, material: SteelTable, r_inner: float, x_nodes: np.ndarray,
-                 outer, T0: float):
+    def __init__(self, material: SteelTable, r_inner: float, x_nodes: np.ndarray, outer, T0: float):
         self.mat = material
-        self.outer = outer                                      # FireBC / PrescribedFluxBC / AmbientBC
-        self.R = r_inner + np.asarray(x_nodes, float)          # node radii
+        self.outer = outer  # FireBC / PrescribedFluxBC / AmbientBC
+        self.R = r_inner + np.asarray(x_nodes, float)  # node radii
         faces = 0.5 * (self.R[:-1] + self.R[1:])
-        self.r_lo = np.concatenate(([self.R[0]], faces))        # CV inner face radius
-        self.r_hi = np.concatenate((faces, [self.R[-1]]))       # CV outer face radius
-        self.vol = np.pi * (self.r_hi**2 - self.r_lo**2)        # m3 per m length
+        self.r_lo = np.concatenate(([self.R[0]], faces))  # CV inner face radius
+        self.r_hi = np.concatenate((faces, [self.R[-1]]))  # CV outer face radius
+        self.vol = np.pi * (self.r_hi**2 - self.r_lo**2)  # m3 per m length
         self.log_ratio = np.log(self.R[1:] / self.R[:-1])
-        self.A_in = 2 * np.pi * self.R[0]                       # m2 per m length
+        self.A_in = 2 * np.pi * self.R[0]  # m2 per m length
         self.A_out = 2 * np.pi * self.R[-1]
         self.T = np.full(len(self.R), float(T0))
-        self.q_net_out = 0.0                                    # W/m2, last step
-        self.q_rad_out = 0.0                                    # radiative part
-        self.q_conv_out = 0.0                                   # convective part
-        self.q_in = 0.0                                         # W/m2 into gas, last step
+        self.q_net_out = 0.0  # W/m2, last step
+        self.q_rad_out = 0.0  # radiative part
+        self.q_conv_out = 0.0  # convective part
+        self.q_in = 0.0  # W/m2 into gas, last step
         self.T_flame = None
 
     @property
@@ -58,8 +57,12 @@ class WallColumn:
     def energy(self):
         """Sensible energy above 0 K per metre length, integrating cp(T)."""
         Tg = np.linspace(0.0, 1600.0, 3201)
-        cum = np.concatenate(([0.0], np.cumsum(0.5 * (self.mat.cp_at(Tg[1:]) +
-                                                      self.mat.cp_at(Tg[:-1])) * np.diff(Tg))))
+        cum = np.concatenate(
+            (
+                [0.0],
+                np.cumsum(0.5 * (self.mat.cp_at(Tg[1:]) + self.mat.cp_at(Tg[:-1])) * np.diff(Tg)),
+            )
+        )
         return float(np.sum(self.mat.rho * self.vol * np.interp(self.T, Tg, cum)))
 
     def step(self, dt: float, t_mid: float, T_gas: float, h_in: float):
@@ -72,8 +75,8 @@ class WallColumn:
         T = self.T
         cp = self.mat.cp_at(T)
         k_face = self.mat.k_at(0.5 * (T[:-1] + T[1:]))
-        G = 2 * np.pi * k_face / self.log_ratio                 # W/m/K per m length
-        C = self.mat.rho * cp * self.vol / dt                   # W/K per m length
+        G = 2 * np.pi * k_face / self.log_ratio  # W/m/K per m length
+        C = self.mat.rho * cp * self.vol / dt  # W/K per m length
 
         diag = C.copy()
         diag[:-1] += G

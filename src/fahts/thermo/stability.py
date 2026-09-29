@@ -24,7 +24,7 @@ class StabilityMixin:
         d = np.log(zf) + lnphi_z
         Kw = self._wilson(T, P)
         trials = [zf * Kw, zf / Kw]
-        if skip_aqueous:      # water-free hydrocarbon trials (liquid-like first)
+        if skip_aqueous:  # water-free hydrocarbon trials (liquid-like first)
             for t in (zf / Kw, zf * Kw):
                 t = t.copy()
                 t[self.iw] = ZFLOOR
@@ -59,14 +59,14 @@ class StabilityMixin:
             if err < tol:
                 break
             if it >= 6 and G_prev is not None and err > 0.5 * G_prev:
-                lnW = d - lnphiw            # Newton not contracting: plain SS step
+                lnW = d - lnphiw  # Newton not contracting: plain SS step
                 G_prev = err
                 continue
             G_prev = err
             if it > 2 and np.abs(np.log(w) - lnz).max() < 1e-4:
-                return 0.0, None, None               # trivial solution
+                return 0.0, None, None  # trivial solution
             if it >= 4 and math.log(SW) > 0.1:
-                break                                # clearly unstable, good enough for K init
+                break  # clearly unstable, good enough for K init
             if it >= 6:
                 sW = np.sqrt(W)
                 g = sW * G
