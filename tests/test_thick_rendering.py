@@ -50,7 +50,7 @@ def test_member_is_closed_solid_with_thickness(section, n_faces):
 
 
 def test_tank_thick_vs_thin():
-    model = read_usfos_fem(ROOT / "tank_horizontal.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "tank_horizontal.fem")
     thin = build_model_mesh(model)
     thick = build_model_mesh(model, show_thickness=True)
     np.testing.assert_allclose(thin.bounds, thick.bounds, atol=1e-9)
@@ -59,7 +59,7 @@ def test_tank_thick_vs_thin():
 
 
 def test_mixed_model_thick_keeps_all_elements():
-    model = read_usfos_fem(ROOT / "model_t1.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "model_t1.fem")
     thin = build_model_mesh(model)
     thick = build_model_mesh(model, show_thickness=True)
     assert set(np.unique(thin["element_id"])) == set(np.unique(thick["element_id"]))

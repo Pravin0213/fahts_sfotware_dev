@@ -37,3 +37,14 @@ Thumbs.db
 
 # Generated OpenFOAM comparison cases (recreated by validation/openfoam/compare_openfoam.py)
 validation/openfoam/runs/
+
+# Large / external data: reference results, study outputs, client inputs (never in git)
+data/
+
+# Raw import from the other machine — being migrated into src/, studies/, tools/, validation/
+Test/
+
+# Home-directory files that do not belong in the repo
+.Xauthority
+.bashrc
+.xact_errormsg

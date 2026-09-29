@@ -5,7 +5,7 @@ Benchmark case
 --------------
 Model  : model_t1.fem   (IHPROFIL + PIPE + BOX + ECCENT + shells)
 Source : RadiationBall  center=(343,484,64)m, radius=5m, flux=350kW/m²
-USFOS  : usfos_verification_results/fahts_beltemp.fem  (15 min, 1-min output steps)
+USFOS  : validation/usfos/reference/fahts_beltemp.fem  (15 min, 1-min output steps)
 
 NOTE: The reference USFOS run used the old two-zone USERFLUX calibration
 (r1=5m/flux1=350kW, r2=100m/flux2=1.5kW). FAHTS RadiationBall has since moved
@@ -57,8 +57,8 @@ import pytest
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 _ROOT = Path(__file__).parent.parent
-_MODEL   = _ROOT / "model_t1.fem"
-_BELTEMP = _ROOT / "usfos_verification_results" / "fahts_beltemp.fem"
+_MODEL   = _ROOT / "examples" / "models" / "model_t1.fem"
+_BELTEMP = _ROOT / "validation" / "usfos" / "reference" / "fahts_beltemp.fem"
 _BALL_CENTER = np.array([343.0, 484.0, 64.0])
 _RADIUS, _FLUX = 5.0, 350_000.0
 

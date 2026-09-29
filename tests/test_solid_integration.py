@@ -110,7 +110,7 @@ def _nearest(model: FEMModel, point: np.ndarray, cls, n: int) -> list[int]:
 @pytest.fixture(scope="module")
 def model_file():
     from fahts.core.io.usfos_reader import read_usfos_fem
-    p = ROOT / "model_file.fem"
+    p = ROOT / "examples" / "models" / "model_file.fem"
     if not p.exists():
         pytest.skip("model_file.fem not found")
     return read_usfos_fem(p)
@@ -119,7 +119,7 @@ def model_file():
 @pytest.fixture(scope="module")
 def model_t1():
     from fahts.core.io.usfos_reader import read_usfos_fem
-    p = ROOT / "model_t1.fem"
+    p = ROOT / "examples" / "models" / "model_t1.fem"
     if not p.exists():
         pytest.skip("model_t1.fem not found")
     return read_usfos_fem(p)

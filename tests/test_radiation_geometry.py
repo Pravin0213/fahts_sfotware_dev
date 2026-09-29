@@ -72,7 +72,7 @@ def test_grid_matches_brute_force():
 
 def test_scene_normals_outward_for_mirrored_beam_frame():
     """The beam frame is left-handed (mirror); scene normals must still point outward."""
-    model = read_usfos_fem(ROOT / "tank_horizontal.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "tank_horizontal.fem")
     cfg = AnalysisConfig(t_end=60, dt=30, output_dt=30)
     e = 1
     el = model.elements[e]
@@ -179,7 +179,7 @@ def test_exchange_zero_in_isothermal_ambient_and_reciprocal():
 
 @pytest.mark.parametrize("source", ["ball", "point"])
 def test_two_plates_shielding_and_exchange(source):
-    model = read_usfos_fem(ROOT / "parallel_plates.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "parallel_plates.fem")
     if source == "ball":
         src = RadiationBall(name="B", center=np.array([1.0, 1.0, -1.0]), radius=0.5,
                             flux=2e5, active=True)

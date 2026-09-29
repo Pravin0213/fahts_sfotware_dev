@@ -9,7 +9,7 @@ Two property modes are supported:
 
 2. USFOS reference mode (usfos_mode=True)
    Constant base values multiplied by temperature-dependent factors from
-   the USFOS thermpar × tempdepy tables in usfos_verification_results/fahts.fem:
+   the USFOS thermpar × tempdepy tables in validation/usfos/reference/fahts.fem:
        thermpar: rho=7850, c_ref=510 J/kg·K, k_ref=50 W/m·K, emiss=0.85
        tempdepy 100 (cp factors):  T=[0..1300], f=[0.792..1.282]
        tempdepy 200 (k  factors):  T=[0..1300], f=[1.084..0.548]
@@ -67,7 +67,7 @@ class SteelMaterial:
     ----------
     usfos_mode : bool
         When True, conductivity() and specific_heat() use the piecewise-linear
-        tables from usfos_verification_results/fahts.fem instead of the Annex C
+        tables from validation/usfos/reference/fahts.fem instead of the Annex C
         polynomial formulas.  Set this flag only for benchmark comparisons.
     """
     mid: int
@@ -80,7 +80,7 @@ class SteelMaterial:
     usfos_mode: bool = field(default=False, compare=False, repr=False)
     # Reference base values for the USFOS thermpar × tempdepy property model
     # (k_ref/c_ref × fixed tempdepy factor curve).  Editable via the GUI Material
-    # dialog; defaults match usfos_verification_results/fahts.fem.
+    # dialog; defaults match validation/usfos/reference/fahts.fem.
     c_ref: float = field(default=_USFOS_C_REF, compare=False, repr=False)  # J/(kg·K)
     k_ref: float = field(default=_USFOS_K_REF, compare=False, repr=False)  # W/(m·K)
 

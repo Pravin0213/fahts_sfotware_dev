@@ -307,7 +307,7 @@ class TestRunAnalysisEndpointExposure:
         from fahts.core.results.analysis_config import AnalysisConfig
         from pathlib import Path
 
-        model = read_usfos_fem(Path(__file__).parent.parent / "model_file.fem")
+        model = read_usfos_fem(Path(__file__).parent.parent / "examples" / "models" / "model_file.fem")
 
         # Pick element 1 (first beam)
         eid = next(iter(model.elements))

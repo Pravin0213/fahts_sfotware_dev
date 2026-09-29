@@ -152,7 +152,7 @@ class TestElementTemperatureAt:
 
 class TestRealBeltempFile:
     """Integration test with the actual USFOS benchmark file."""
-    _PATH = Path(__file__).parents[1] / "usfos_verification_results" / "fahts_beltemp.fem"
+    _PATH = Path(__file__).parents[1] / "validation" / "usfos" / "reference" / "fahts_beltemp.fem"
 
     def test_file_parses_without_error(self):
         if not self._PATH.exists():

@@ -23,7 +23,7 @@ def sm():
 @pytest.fixture(scope="module")
 def sm_with_model():
     from fahts.core.io.usfos_reader import read_usfos_fem
-    fem_path = Path(__file__).parents[1] / "model_file.fem"
+    fem_path = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
     if not fem_path.exists():
         pytest.skip("model_file.fem not found")
     mgr = SceneManager(off_screen=True)

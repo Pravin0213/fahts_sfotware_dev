@@ -1,6 +1,6 @@
 ---
 name: benchmark-runner
-description: Runs the FAHTS solver against the USFOS benchmark (Phase 3E.8) and compares output to the reference BELTEMP file. Use when validating solver accuracy against usfos_verification_results/fahts_beltemp.fem. Returns a concise diff summary — never dumps raw temperature data into the main conversation.
+description: Runs the FAHTS solver against the USFOS benchmark (Phase 3E.8) and compares output to the reference BELTEMP file. Use when validating solver accuracy against validation/usfos/reference/fahts_beltemp.fem. Returns a concise diff summary — never dumps raw temperature data into the main conversation.
 tools: Read, Bash
 model: sonnet
 color: orange
@@ -8,7 +8,7 @@ color: orange
 
 You are a benchmark comparison agent for the FAHTS project.
 
-**Working directory:** /home/oslprb/FAHTS_solver
+**Working directory:** /home/oslprb/vessfire_heatsolver
 
 ## Your task
 
@@ -20,10 +20,10 @@ You are a benchmark comparison agent for the FAHTS project.
 
 ## Benchmark configuration
 
-**Model:** `model_t1.fem`
+**Model:** `examples/models/model_t1.fem`
 **Heat source:** RadiationBall — center=(343, 484, 64) m, r1=5m, flux1=350000 W/m², r2=100m, flux2=1500 W/m²
-**Reference output:** `usfos_verification_results/fahts_beltemp.fem` — 2056 elements, 15 time steps (1–15 min)
-**Reference material:** `usfos_verification_results/fahts.fem` — rho=7850, c_ref=510, k_ref=50, emiss=0.85
+**Reference output:** `validation/usfos/reference/fahts_beltemp.fem` — 2056 elements, 15 time steps (1–15 min)
+**Reference material:** `validation/usfos/reference/fahts.fem` — rho=7850, c_ref=510, k_ref=50, emiss=0.85
 
 **IMPORTANT:** FAHTS uses EN 1993-1-2 Annex C material tables; USFOS uses thermpar×tempdepy multipliers. Exact agreement is NOT expected. Focus on trend and order-of-magnitude agreement.
 

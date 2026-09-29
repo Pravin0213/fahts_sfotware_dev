@@ -323,7 +323,7 @@ class TestBuildShellSurfaceMesh:
 class TestBuildModelMeshMixed:
     @pytest.fixture
     def real_model_t1(self):
-        p = Path(__file__).parents[1] / "model_t1.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_t1.fem"
         if not p.exists():
             pytest.skip("model_t1.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -374,7 +374,7 @@ class TestBuildModelMeshMixed:
 class TestReaderT1:
     @pytest.fixture
     def model(self):
-        p = Path(__file__).parents[1] / "model_t1.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_t1.fem"
         if not p.exists():
             pytest.skip("model_t1.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -412,7 +412,7 @@ class TestReaderT1:
                 assert nid in model.nodes, f"Shell {se.eid} refs missing node {nid}"
 
     def test_model_file_still_works(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem

@@ -68,7 +68,7 @@ Implemented in `TemperatureField.section_gradient(eid, t_idx, mesh)`.
 
 ## USFOS Benchmark
 
-Location: `usfos_verification_results/`
+Location: `validation/usfos/reference/`
 
 | File | Contents |
 |------|----------|

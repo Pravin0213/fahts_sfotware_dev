@@ -38,20 +38,20 @@ def test_plate_exposed_edges_area(flags):
 
 
 def _thick(tmp_path) -> Path:
-    src = (ROOT / "parallel_plates_unequal.fem").read_text()
+    src = (ROOT / "examples" / "models" / "parallel_plates_unequal.fem").read_text()
     p = tmp_path / "thick.fem"
     p.write_text(src.replace(" PLTHICK          1     0.02", " PLTHICK          1     0.8"))
     return p
 
 
 def test_topology_free_edges_and_ends():
-    m = read_usfos_fem(ROOT / "parallel_plates_unequal.fem")
+    m = read_usfos_fem(ROOT / "examples" / "models" / "parallel_plates_unequal.fem")
     node_use, edge_use = _model_topology(m)
     counts = np.array(list(edge_use.values()))
     # 4×4 + 6×6 grids: boundary edges used once, interior edges twice
     assert (counts == 1).sum() == 4 * 4 + 4 * 6
     assert set(counts) <= {1, 2}
-    t = read_usfos_fem(ROOT / "tank_horizontal.fem")
+    t = read_usfos_fem(ROOT / "examples" / "models" / "tank_horizontal.fem")
     nu, _ = _model_topology(t)
     assert nu[1] == 1 and nu[13] == 1 and all(nu[k] == 2 for k in range(2, 13))
 
@@ -73,7 +73,7 @@ def test_thick_plate_heated_through_edge(tmp_path):
 
 def test_tank_open_ends_exposed():
     """Single line of PIPE members: the two free ends expose their annular end caps."""
-    m = read_usfos_fem(ROOT / "tank_horizontal.fem")
+    m = read_usfos_fem(ROOT / "examples" / "models" / "tank_horizontal.fem")
     from fahts.core.heat.sources.fire_zone import FireCurve, FireCurveType, FireZone
 
     zone = FireZone(name="Z", center=np.array([12.0, 0.0, 2.5]), dims=np.array([30.0, 6, 6]),

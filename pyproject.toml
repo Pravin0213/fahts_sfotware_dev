@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fahts"
+version = "0.1.0"
+description = "Fire analysis of structures and process equipment: heat transfer, process response, relief and rupture."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0.0",
+    "scipy>=1.14.0",
+    "pandas>=2.2.0",
+    "matplotlib>=3.9.0",
+    "openpyxl>=3.1.0",     # Excel export
+]
+
+[project.optional-dependencies]
+gui = [
+    "PyQt6>=6.6.0",
+    "pyvista>=0.44.0",
+    "pyvistaqt>=0.11.0",
+]
+process = [
+    "CoolProp>=6.6",       # pure-fluid properties (process model)
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-qt>=4.4.0",    # Qt testing helpers
+]
+
+[project.scripts]
+fahts = "fahts.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with -m \"not slow\")",
+]

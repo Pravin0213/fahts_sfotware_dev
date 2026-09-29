@@ -180,7 +180,7 @@ class TestWriteScalars:
         assert gids[3] == 0         # ELEV_A → index 0
 
     def test_write_scalars_with_real_model(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -237,7 +237,7 @@ class TestAddMeshKwargs:
 
 class TestSceneManagerIntegration:
     def test_colour_map_created_after_load(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -252,7 +252,7 @@ class TestSceneManagerIntegration:
         scene.close()
 
     def test_group_id_scalars_written_on_load(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -265,7 +265,7 @@ class TestSceneManagerIntegration:
         scene.close()
 
     def test_colour_by_group_override_reflected(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -304,14 +304,14 @@ class TestColourPersistence:
         w.close()
 
     def test_default_colour_after_load(self, window):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         window.open_file(p)
         assert window._scene.colour_mode == "default"
 
     def test_group_colour_persists_across_reload(self, window):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         window.open_file(p)
@@ -324,7 +324,7 @@ class TestColourPersistence:
         assert window._scene.colour_mode == "group"
 
     def test_default_colour_not_reapplied_when_not_selected(self, window):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         window.open_file(p)
@@ -533,7 +533,7 @@ class TestTemperatureColourMap:
 class TestSceneManagerTemperatureCmap:
     @pytest.fixture(scope="module")
     def real_model(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem
@@ -707,7 +707,7 @@ class TestThresholdOverlay:
 class TestSceneManagerThresholdOverlay:
     @pytest.fixture(scope="module")
     def real_model(self):
-        p = Path(__file__).parents[1] / "model_file.fem"
+        p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
         if not p.exists():
             pytest.skip("model_file.fem not found")
         from fahts.core.io.usfos_reader import read_usfos_fem

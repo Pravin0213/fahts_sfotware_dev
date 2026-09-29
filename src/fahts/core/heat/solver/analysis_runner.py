@@ -88,7 +88,7 @@ _MIN_BALL_FLUX: float = 1.0
 _THERMAL_DENSITY_FALLBACK: float = 7850.0
 
 # Steel surface re-radiation emissivity used in USFOS benchmark mode.
-# Matches the ``emiss = 0.85`` value declared in usfos_verification_results/fahts.fem;
+# Matches the ``emiss = 0.85`` value declared in validation/usfos/reference/fahts.fem;
 # the production default re-radiation emissivity is 0.7 (see surface_solver.py).
 _USFOS_BENCHMARK_EMISSIVITY: float = 0.85
 

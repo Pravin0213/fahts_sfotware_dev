@@ -885,10 +885,10 @@ ALL section types now use FAHTS axial × hoop surface-shell approach (SINTEF FAH
 Test suite: 1008 passing, 1 skipped.
 
 **Next immediate task:** Phase 3E.8 — Automated USFOS benchmark comparison test.
-Compare FAHTS output against `usfos_verification_results/fahts_beltemp.fem` using the Crank-Nicolson solver.
+Compare FAHTS output against `validation/usfos/reference/fahts_beltemp.fem` using the Crank-Nicolson solver.
 After 3E.8: Phase 5 (advanced features).
 
-**USFOS Benchmark (usfos_verification_results/):**
+**USFOS Benchmark (validation/usfos/reference/):**
 - Model: `model_t1.fem` (same as main test model — IHPROFIL + PIPE + BOX + shells)
 - Heat source: two-zone RadiationBall at center=(343,484,64)m
   - Inner zone: r1=5m, flux1=350,000 W/m²

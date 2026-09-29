@@ -18,7 +18,7 @@ from fahts.renderer.scene_manager import SceneManager
 def real_model():
     """Load model_file.fem once for the whole module."""
     from fahts.core.io.usfos_reader import read_usfos_fem
-    fem_path = Path(__file__).parents[1] / "model_file.fem"
+    fem_path = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
     if not fem_path.exists():
         pytest.skip("model_file.fem not found")
     return read_usfos_fem(fem_path)

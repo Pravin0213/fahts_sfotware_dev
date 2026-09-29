@@ -22,7 +22,7 @@ def qapp():
 @pytest.fixture(scope="module")
 def real_model(qapp):
     from fahts.core.io.usfos_reader import read_usfos_fem
-    p = Path(__file__).parents[1] / "model_file.fem"
+    p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
     if not p.exists():
         pytest.skip("model_file.fem not found")
     return read_usfos_fem(p)

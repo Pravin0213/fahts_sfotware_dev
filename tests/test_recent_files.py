@@ -33,7 +33,7 @@ def window(qapp):
 
 @pytest.fixture(scope="module")
 def fem_path():
-    p = Path(__file__).parents[1] / "model_file.fem"
+    p = Path(__file__).parents[1] / "examples" / "models" / "model_file.fem"
     if not p.exists():
         pytest.skip("model_file.fem not found")
     return p

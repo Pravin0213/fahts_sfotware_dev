@@ -21,14 +21,14 @@ def _ball(active: bool = True) -> RadiationBall:
 
 
 def test_plates_counted_for_radiation_ball():
-    model = read_usfos_fem(ROOT / "parallel_plates.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "parallel_plates.fem")
     assert not model.elements and len(model.shell_elements) == 32
     assert exposed_analysis_element_ids(model, [_ball()]) == set(model.shell_elements)
     assert exposed_analysis_element_ids(model, [_ball(active=False)]) == set()
 
 
 def test_plates_run_with_radiation_ball():
-    model = read_usfos_fem(ROOT / "parallel_plates.fem")
+    model = read_usfos_fem(ROOT / "examples" / "models" / "parallel_plates.fem")
     res = run_analysis(model, [_ball()], AnalysisConfig(t_end=300.0, dt=30.0, output_dt=300.0))
     assert set(res.element_ids) == set(model.shell_elements)
     T = res.T_centroid[-1]

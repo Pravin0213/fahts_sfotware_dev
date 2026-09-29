@@ -176,7 +176,7 @@ class AnalysisConfig:
     # USFOS benchmark mode (opt-in, default OFF).  When True the solver switches
     # steel thermal properties to the USFOS thermpar/tempdepy multiplier tables
     # (SteelMaterial.usfos_mode=True) and sets the RadiationBall re-radiation
-    # emissivity to 0.85 (matching ``emiss`` in usfos_verification_results/fahts.fem).
+    # emissivity to 0.85 (matching ``emiss`` in validation/usfos/reference/fahts.fem).
     # Used ONLY for direct comparison against a USFOS reference run; production
     # analyses use EN 1993-1-2 Annex C (the architectural default).
     usfos_benchmark_mode: bool = False

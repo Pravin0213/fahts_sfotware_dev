@@ -28,51 +28,53 @@ Completed phase details: `docs/phase_history.md`.
 
 ## Project Layout
 
-```
-FAHTS_solver/
-├── CLAUDE.md              ← THIS FILE
-├── ROADMAP.md             ← Full product plan and phase breakdown
-├── docs/
-│   ├── phase_history.md   ← Completed phase details (archive — not auto-loaded)
-│   └── 3D_FEM_heat_transfer_theory.txt  ← Solver theory reference
-├── main.py                ← Entry point
-├── model_file.fem         ← Primary test model (659 nodes, ~783 beams, BOX only)
-├── model_t1.fem           ← Extended model (IHPROFIL + PIPE + BOX + shells)
-├── model_t3.fem           ← Asymmetric BOX sections
-├── usfos_verification_results/  ← Benchmark reference (fahts_beltemp.fem)
-├── legacy/                ← READ-ONLY reference scripts, do NOT import
-│
-└── fahts/
-    ├── core/model/        ← FEMModel, Node, BeamElement, BoxSection, ISection,
-    │                         PipeSection, PlateSection, SteelMaterial, Group
-    ├── core/model/        ← FEMModel, BeamElement, BoxSection, ISection,
-    │   │                     PipeSection, PlateSection, SteelMaterial, Node, Group
-    │   └── CLAUDE.md      ← Section field names, UNITVEC convention, dataclass contracts
-    ├── core/io/           ← usfos_reader.py, results_writer.py, beltemp_parser.py
-    │   └── CLAUDE.md      ← USFOS format, BELTEMP format, benchmark config
-    ├── core/heat/
-    │   ├── sources/       ← fire_zone.py, rad_ball.py
-    │   ├── bc/            ← view_factor.py, net_flux.py
-    │   ├── section_mesh/  ← BoxSurfaceMesher, IProfileSurfaceMesher,
-    │   │   │                 PipeSurfaceMesher, PlateSurfaceMesher,
-    │   │   │                 BeamSurfaceMesh (+ legacy cross-section meshers)
-    │   │   └── CLAUDE.md  ← Legacy vs active meshers, BeamSurfaceMesh fields
-    │   └── solver/        ← surface_solver.py (primary), analysis_runner.py,
-    │       │                 time_integrator.py (legacy), shell_1d_solver.py
-    │       └── CLAUDE.md  ← Solver architecture, CN equations, dispatch logic
-    ├── core/results/      ← temperature_field.py, analysis_config.py, post_processor.py
-    │   └── CLAUDE.md      ← TemperatureField/AnalysisConfig/PostProcessor APIs, results flow
-    ├── renderer/          ← beam_geometry.py, scene_manager.py, colormap.py
-    └── gui/
-        ├── CLAUDE.md      ← Qt patterns, panels, dialogs, animation toolbar
-        ├── main_window.py
-        ├── analysis_worker.py
-        ├── panels/
-        └── dialogs/
+The repo is being restructured (branch `restructure-monorepo`, started 2026-09-29) into a
+product that couples the structural heat solver with a process-equipment model (pressure,
+relief, rupture). ✅ = exists now, ⬜ = planned (ported from `Test/vfpy`).
 
-tests/
-└── CLAUDE.md              ← Test conventions, count, run command
 ```
+vessfire_heatsolver/
+├── CLAUDE.md  ROADMAP.md  pyproject.toml   ← pip install -e ".[gui,process,dev]"
+├── main.py                ← thin launcher shim → src/fahts/__main__.py
+├── src/fahts/             ✅ the product — only this ships
+│   ├── __main__.py        ✅ GUI entry point (python -m fahts / `fahts`)
+│   ├── core/model/        ✅ FEMModel, sections, SteelMaterial (see its CLAUDE.md)
+│   ├── core/io/           ✅ usfos_reader, results_writer, beltemp_parser
+│   ├── core/heat/         ✅ structural heat solver: sources/, bc/, radiation/,
+│   │                         section_mesh/, solid_mesh/, solver/ (→ becomes wall/fem_3d/)
+│   ├── core/results/      ✅ TemperatureField, AnalysisConfig, PostProcessor
+│   ├── renderer/  gui/    ✅ 3-D view + Qt app
+│   ├── common/            ⬜ units, constants, errors, result containers
+│   ├── materials/         ⬜ steel k/cp/ρ(T) + strength/E/α(T) (merge SteelMaterial + vfpy Material)
+│   ├── thermo/            ⬜ PR EOS + flash, pseudo-components, CoolProp adapter
+│   ├── fire/              ⬜ fire loads shared by all solvers (zones, rad-ball, black-body BC)
+│   ├── wall/column_1d/    ⬜ radial 1-D wall column (vfpy WallColumn)
+│   ├── process/           ⬜ vessel geometry, inner-wall heat transfer, gas/liquid zones, model loop
+│   ├── relief/            ⬜ BDV / PSV / orifice / line flow
+│   ├── rupture/           ⬜ stresses + failure criteria + time to rupture
+│   ├── coupling/          ⬜ the ONLY place that combines wall ↔ process ↔ fire
+│   └── cli.py             ⬜ headless case runner
+├── tests/                 ✅ (target: unit/<pkg>/, integration/, regression/)
+├── validation/            ✅ runnable benchmarks + reports
+│   ├── validate_3d.py     ✅ analytical checks  ├── openfoam/ ✅  ├── usfos/reference/ ✅
+│   └── vessfire/          ⬜ VessFire comparison readers/tools (never imported by src/)
+├── examples/models/       ✅ *.fem models (model_file, model_t1, model_t3, tank_horizontal, …)
+├── studies/               ⬜ dated research scripts, never imported by src/
+├── tools/vessfire_runner/ ⬜ case-matrix builders + batch runner
+├── docs/                  ✅ theory, plans (target: theory/, decisions/)
+├── data/                  gitignored — large reference results, study outputs
+├── Test/                  gitignored — raw import being migrated; read-only source, do not edit
+└── legacy/                READ-ONLY reference scripts, do NOT import
+```
+
+**Layering rule (target):** `common → materials/thermo → fire/wall/process/relief/rupture
+→ coupling → cli/gui`. Physics packages never import each other; only `coupling/` combines
+them. Wall ↔ process talk through one small interface (inner-wall T per region ↔ h, T_fluid
+per region) so `wall/column_1d` and the 3-D FEM wall are interchangeable.
+
+**Licence / IP:** everything derived from VessFire (reference results, runner, comparisons)
+stays in `validation/`, `tools/`, `data/` — never in `src/`. Client project data and
+third-party PDFs never go in git.
 
 ---
 
@@ -187,8 +189,9 @@ cyan wireframe. Click any quad to see its 4 local node indices and the K-matrix 
 ## How to Run
 
 ```bash
-python main.py                 # empty app
-python main.py model_file.fem  # BOX-only model
-python main.py model_t1.fem    # mixed sections
-python -m pytest tests/ -q     # run all tests
+pip install -e ".[gui,process,dev]"               # once (editable install)
+python main.py                                    # empty app (or: python -m fahts)
+python main.py examples/models/model_file.fem     # BOX-only model
+python main.py examples/models/model_t1.fem       # mixed sections
+python -m pytest tests/ -q                        # run all tests
 ```

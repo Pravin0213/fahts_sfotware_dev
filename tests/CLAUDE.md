@@ -5,7 +5,7 @@
 **1008 passing, 1 skipped** (as of 2026-05-18)
 
 ```bash
-cd /home/oslprb/FAHTS_solver
+cd /home/oslprb/vessfire_heatsolver
 python -m pytest tests/ -q          # all tests
 python -m pytest tests/test_foo.py  # single file
 ```
@@ -32,7 +32,7 @@ must parse cleanly — smoke tests for both exist.
 
 ## Conventions
 
-- One test file per module (mirror `fahts/` path structure)
+- One test file per module (mirror `src/fahts/` path structure)
 - Physics tests: use small hand-crafted meshes, not the full model files
 - Numeric tolerance: `np.testing.assert_allclose(rtol=1e-5)` unless physics dictates looser
 - Do NOT mock the filesystem for parser tests — use real fixture files in `tests/fixtures/` or the project model files
@@ -43,9 +43,9 @@ must parse cleanly — smoke tests for both exist.
 
 ## USFOS Benchmark Test (Phase 3E.8 — NEXT TASK)
 
-Goal: automated comparison of FAHTS output against `usfos_verification_results/fahts_beltemp.fem`.
+Goal: automated comparison of FAHTS output against `validation/usfos/reference/fahts_beltemp.fem`.
 
-Reference: `usfos_verification_results/fahts_beltemp.fem` — 2056 elements, 15 time steps.
+Reference: `validation/usfos/reference/fahts_beltemp.fem` — 2056 elements, 15 time steps.
 Heat source: RadiationBall, center=(343,484,64)m, r1=5m/flux1=350kW, r2=100m/flux2=1.5kW.
 Model: `model_t1.fem`.
 
