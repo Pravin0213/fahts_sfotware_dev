@@ -30,7 +30,8 @@ Completed phase details: `docs/phase_history.md`.
 
 The repo is being restructured (branch `restructure-monorepo`, started 2026-09-29) into a
 product that couples the structural heat solver with a process-equipment model (pressure,
-relief, rupture). ✅ = exists now, ⬜ = planned (ported from `Test/vfpy`).
+relief, rupture). ✅ = exists now, ⬜ = planned. Process model ported from `Test/vfpy`
+2026-09-30 (behaviour-preserving; known issues in `docs/process_model_known_issues.md`).
 
 ```
 vessfire_heatsolver/
@@ -44,21 +45,21 @@ vessfire_heatsolver/
 │   │                         section_mesh/, solid_mesh/, solver/ (→ becomes wall/fem_3d/)
 │   ├── core/results/      ✅ TemperatureField, AnalysisConfig, PostProcessor
 │   ├── renderer/  gui/    ✅ 3-D view + Qt app
-│   ├── common/            ⬜ units, constants, errors, result containers
-│   ├── materials/         ⬜ steel k/cp/ρ(T) + strength/E/α(T) (merge SteelMaterial + vfpy Material)
-│   ├── thermo/            ⬜ PR EOS + flash, pseudo-components, CoolProp adapter
-│   ├── fire/              ⬜ fire loads shared by all solvers (zones, rad-ball, black-body BC)
-│   ├── wall/column_1d/    ⬜ radial 1-D wall column (vfpy WallColumn)
-│   ├── process/           ⬜ vessel geometry, inner-wall heat transfer, gas/liquid zones, model loop
-│   ├── relief/            ⬜ BDV / PSV / orifice / line flow
-│   ├── rupture/           ⬜ stresses + failure criteria + time to rupture
-│   ├── coupling/          ⬜ the ONLY place that combines wall ↔ process ↔ fire
+│   ├── common/            ✅ constants, compat
+│   ├── materials/         ✅ SteelTable (k, cp, strength factors vs T), EN 1993-1-2 E(T), strain
+│   ├── thermo/            ✅ PR EOS + flashes, free water, pseudo-components, transport
+│   ├── fire/              ✅ fire + ambient exposure BCs (structural fire zones still in core/heat)
+│   ├── wall/column_1d/    ✅ radial 1-D wall column
+│   ├── process/           ✅ geometry, zones, fluid property dicts, inner_ht/ (wall→fluid, interface)
+│   ├── relief/            ✅ blowdown (real-gas nozzle + Fanno line), ideal-gas fallback, PSV
+│   ├── rupture/           ✅ stress solutions, axisymmetric FE, failure times
+│   ├── coupling/          ✅ VesselFireModel (process model driver) — see coupling/CLAUDE.md
 │   └── cli.py             ⬜ headless case runner
 ├── tests/                 ✅ (target: unit/<pkg>/, integration/, regression/)
 │   └── regression/process/ ✅ golden outputs of legacy/vfpy — run with --golden when porting
 ├── validation/            ✅ runnable benchmarks + reports
 │   ├── validate_3d.py     ✅ analytical checks  ├── openfoam/ ✅  ├── usfos/reference/ ✅
-│   └── vessfire/          ⬜ VessFire comparison readers/tools (never imported by src/)
+│   └── vessfire/          ✅ deck reader, material DB loader (never imported by src/)
 ├── examples/models/       ✅ *.fem models (model_file, model_t1, model_t3, tank_horizontal, …)
 ├── studies/               ⬜ dated research scripts, never imported by src/
 ├── tools/vessfire_runner/ ⬜ case-matrix builders + batch runner

@@ -30,13 +30,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from validation.vessfire.input_deck import read_case
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 CASE_DIR = HERE / "cases"
 GOLDEN_DIR = HERE / "golden"
 LEGACY_VFPY = ROOT / "legacy" / "vfpy"
 MATERIAL_DB = ROOT / "data" / "reference" / "vessfire" / "vessfire.db"
-P_ATM = 101325.0
 
 
 @dataclass(frozen=True)
@@ -92,91 +93,6 @@ def have_material_db() -> bool:
     return MATERIAL_DB.exists()
 
 
-# ------------------------------------------------------------------ input deck reader
-# Verbatim copy of vfpy's vessfire_io.read_case (that module cannot be imported: it pulls
-# in Windows-only tooling at import time).
-
-def _lines(p: Path) -> list[str]:
-    return [ln.strip() for ln in p.read_text(errors="replace").splitlines()]
-
-
-def read_case(case_dir: Path) -> dict:
-    case_dir = Path(case_dir)
-    admin = {}
-    for ln in _lines(case_dir / "Admin.brl"):
-        p = ln.split()
-        if len(p) >= 2 and p[0].startswith("#"):
-            admin[p[0][1:].lower()] = p[1]
-
-    seg = {"fluid": {}, "bdv": None, "psv": None, "back_pressure": P_ATM}
-    in_fluid = False
-    for ln in _lines(case_dir / "Segment.brl"):
-        p = ln.split()
-        if not p:
-            continue
-        if p[0] == "#Fluid":
-            in_fluid = True
-            continue
-        if in_fluid and not p[0].startswith("#"):
-            if len(p) >= 4:                                   # pseudo: frac, rel. density/API, Tb
-                seg.setdefault("pseudo", {})[p[0].upper()] = dict(rd=float(p[2]), Tb=float(p[3]))
-            seg["fluid"][p[0].upper()] = float(p[1])
-            continue
-        in_fluid = False
-        key = p[0]
-        if key == "#Vessel":
-            seg.update(tag=p[1], strength_mpa=float(p[2]), material=p[3],
-                       D=float(p[4]), t=float(p[5]), L=float(p[6]))
-        elif key == "#Vessel_conditions":
-            seg.update(P0=float(p[1]) * 1e3, T0=float(p[2]), hc_level=float(p[3]),
-                       water_level=float(p[4]), T_shell=float(p[p.index("%Shell") + 1]))
-        elif key == "#Vessel_Outside_Conditions":
-            seg.update(T_env=float(p[1]), h_out=float(p[2]), eps_surf=float(p[3]))
-        elif key == "#Vessel_Orientation":
-            seg["orientation"] = p[1].upper()
-        elif key == "#StressType":
-            seg["stress_type"] = p[1].upper()
-        elif key == "#StressFactor":
-            seg["stress_factor"] = float(p[1])
-        elif key == "#External_Longitudinal_Stress":
-            seg["ext_long_mpa"] = float(p[1])
-        elif key == "#Blowdown_valve":
-            seg["bdv"] = dict(d=float(p[1]), cd=float(p[2]), delay=float(p[3]))
-        elif key == "#Blowdown_line":
-            seg["bdv_line"] = dict(d=float(p[1]), t=float(p[2]), L=float(p[3]))
-        elif key == "#BDV_Valve_location":
-            seg["bdv_loc"] = (float(p[1]), float(p[2]))
-        elif key == "#Process_safety_valve":
-            seg["psv"] = dict(d=float(p[1]), cd=float(p[2]), p_set=float(p[3]) * 1e3,
-                              p_full=float(p[4]) * 1e3, p_reseat=float(p[5]) * 1e3,
-                              type=int(p[6]))
-        elif key == "#Back_pressure":
-            seg["back_pressure"] = float(p[1]) * 1e3
-
-    hl = {}
-    txt = _lines(case_dir / "heatload.scn")
-    num = lambda s: float(s.split(":")[-1])  # noqa: E731
-    for ln in txt:
-        if ln.startswith("Longitudinal direction, start"):
-            hl["xi_start"] = num(ln)
-        elif ln.startswith("end [0 - 1]"):
-            hl["xi_end"] = num(ln)
-        elif ln.startswith("Circumferential length"):
-            hl["circ_deg"] = num(ln)
-        elif ln.startswith("Angle of attack"):
-            hl["attack_deg"] = num(ln)
-    rows = []
-    for ln in txt:
-        p = ln.split()
-        if len(p) == 3:
-            try:
-                rows.append([float(x) for x in p])
-            except ValueError:
-                pass
-    hl["series"] = np.array(rows) if rows else np.zeros((1, 3))
-    return dict(admin=admin, seg=seg, hl=hl, name=case_dir.name)
-
-
 # ------------------------------------------------------------------ implementations
 
 def _legacy_modules():
@@ -221,10 +137,39 @@ def _shim(name: str, **attrs) -> types.ModuleType:
 
 
 def _ported_modules() -> dict[str, types.ModuleType]:
+    import fahts.fire as fire
     import fahts.thermo as thermo
+    from fahts.common.constants import SIGMA
+    from fahts.materials import SteelTable
     from fahts.thermo import component_data
+    from fahts.wall.column_1d import REFERENCE_NODES_105MM, WallColumn
+    from fahts.wall.column_1d.tridiagonal import solve_tridiagonal
+    from validation.vessfire.material_db import load_steel_table
+
+    class Material(SteelTable):          # legacy API: Material.from_vessfire_db(name)
+        @classmethod
+        def from_vessfire_db(cls, name, db=MATERIAL_DB):
+            return load_steel_table(name, db)
+
+    import fahts.relief.blowdown as blowdown
+    import fahts.relief.ideal_gas as ideal_gas
+    from fahts.relief.psv import PSVOpening
+    from fahts.rupture import membrane_stresses
+
+    def PSV(_fluid, spec, _model):       # legacy signature; only the opening is used
+        return PSVOpening(spec)
 
     return {
+        "valves": ideal_gas,
+        "valves2": _shim("valves2", mdot=blowdown.mdot),
+        "vessel": _shim("vessel", AmbientAuto=fire.AmbientAuto, PSV=PSV,
+                        stresses=membrane_stresses, H_CORRELATIONS=_legacy_h_correlations()),
+        "heat_transfer": _shim("heat_transfer", SIGMA=SIGMA, Material=Material,
+                               GuidelineFire=fire.GuidelineFire, FireBC=fire.FireBC,
+                               PrescribedFluxBC=fire.PrescribedFluxBC,
+                               AmbientBC=fire.AmbientBC, WallColumn=WallColumn,
+                               VESSFIRE_LOG_NODES_105MM=REFERENCE_NODES_105MM,
+                               thomas=solve_tridiagonal),
         "thermo_pr": _shim("thermo_pr", PRMixture=thermo.PRMixture,
                            FlashResult=thermo.FlashResult, Phase=thermo.Phase,
                            characterise_pseudo=thermo.characterise_pseudo),
@@ -232,13 +177,34 @@ def _ported_modules() -> dict[str, types.ModuleType]:
     }
 
 
+def _legacy_h_correlations() -> dict:
+    """Not ported yet (moves to process/inner_ht): taken from the legacy file by source."""
+    src = (LEGACY_VFPY / "vessel.py").read_text()
+    start = src.index("H_CORRELATIONS = {")
+    end = src.index("}\n", start) + 2
+    ns: dict = {}
+    exec(src[start:end], ns)  # noqa: S102 - trusted, frozen reference file
+    return ns["H_CORRELATIONS"]
+
+
 def _hybrid_worker(case: dict, t_end: float, opts: dict):
     """Runs in a fresh process so legacy and ported modules never share sys.modules."""
     warnings.simplefilter("ignore")
     sys.modules.update(_ported_modules())
     vessel2, _ = _legacy_modules()
-    assert vessel2.PRMixture.__module__.startswith("fahts."), "hybrid is not using the port"
-    return _run_legacy(case, t_end, opts)
+    for obj in (vessel2.PRMixture, vessel2.WallColumn, vessel2.GuidelineFire,
+                vessel2.AmbientAuto, vessel2.valves2.mdot, vessel2.mdot_orifice_line,
+                vessel2.stresses):
+        assert obj.__module__.startswith("fahts."), f"hybrid is not using the port: {obj}"
+    from fahts.rupture import evaluate
+    from fahts.wall.column_1d import REFERENCE_NODES_105MM
+    from validation.vessfire.material_db import load_steel_table
+
+    opt = vessel2.Options2(t_end=t_end, out_every=OUT_EVERY, **opts)
+    ts, _meta = vessel2.simulate2(case, opt)
+    mat = load_steel_table(case["seg"]["material"], MATERIAL_DB)
+    _ss, failures = evaluate(ts, case, mat, x_nodes=REFERENCE_NODES_105MM)
+    return ts, failures
 
 
 def _run_hybrid(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -247,7 +213,21 @@ def _run_hybrid(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.
         return pool.apply(_hybrid_worker, (case, t_end, opts))
 
 
-IMPLEMENTATIONS = {"legacy": _run_legacy, "hybrid": _run_hybrid}
+def _run_fahts(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The product code only: fahts.coupling + fahts.rupture (no legacy import)."""
+    from fahts.coupling import VesselFireOptions, simulate
+    from fahts.rupture import evaluate
+    from fahts.wall.column_1d import REFERENCE_NODES_105MM
+    from validation.vessfire.material_db import load_steel_table
+
+    mat = load_steel_table(case["seg"]["material"], MATERIAL_DB)
+    opt = VesselFireOptions(t_end=t_end, out_every=OUT_EVERY, **opts)
+    ts, _meta = simulate(case, opt, mat)
+    _ss, failures = evaluate(ts, case, mat, x_nodes=REFERENCE_NODES_105MM)
+    return ts, failures
+
+
+IMPLEMENTATIONS = {"legacy": _run_legacy, "hybrid": _run_hybrid, "fahts": _run_fahts}
 
 
 def run(gr: GoldenRun, impl: str = "legacy") -> tuple[pd.DataFrame, pd.DataFrame]:
