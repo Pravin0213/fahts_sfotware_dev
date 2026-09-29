@@ -20,7 +20,9 @@ it the golden tests are skipped.
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import sys
+import types
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,7 +208,46 @@ def _run_legacy(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.
     return ts, failures
 
 
-IMPLEMENTATIONS = {"legacy": _run_legacy}
+# ------------------------------------------------------------------ hybrid (port in progress)
+# While vfpy is being ported, the legacy driver (vessel2.simulate2) runs on top of the
+# ported modules: each ported module is installed under its legacy flat name before the
+# legacy code is imported. Add an entry here as each module is ported; when the driver
+# itself is ported, "fahts" calls src/fahts directly and the hybrid goes away.
+
+def _shim(name: str, **attrs) -> types.ModuleType:
+    mod = types.ModuleType(name)
+    mod.__dict__.update(attrs)
+    return mod
+
+
+def _ported_modules() -> dict[str, types.ModuleType]:
+    import fahts.thermo as thermo
+    from fahts.thermo import component_data
+
+    return {
+        "thermo_pr": _shim("thermo_pr", PRMixture=thermo.PRMixture,
+                           FlashResult=thermo.FlashResult, Phase=thermo.Phase,
+                           characterise_pseudo=thermo.characterise_pseudo),
+        "thermo_data": component_data,
+    }
+
+
+def _hybrid_worker(case: dict, t_end: float, opts: dict):
+    """Runs in a fresh process so legacy and ported modules never share sys.modules."""
+    warnings.simplefilter("ignore")
+    sys.modules.update(_ported_modules())
+    vessel2, _ = _legacy_modules()
+    assert vessel2.PRMixture.__module__.startswith("fahts."), "hybrid is not using the port"
+    return _run_legacy(case, t_end, opts)
+
+
+def _run_hybrid(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(1) as pool:
+        return pool.apply(_hybrid_worker, (case, t_end, opts))
+
+
+IMPLEMENTATIONS = {"legacy": _run_legacy, "hybrid": _run_hybrid}
 
 
 def run(gr: GoldenRun, impl: str = "legacy") -> tuple[pd.DataFrame, pd.DataFrame]:
