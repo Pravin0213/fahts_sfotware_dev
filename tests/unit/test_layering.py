@@ -18,7 +18,7 @@ ALLOWED = {
     "thermo": {"common"},
     "materials": {"common"},
     "fire": {"common"},
-    "wall": {"materials", "common"},
+    "wall": {"materials", "common", "core"},        # fem_3d uses the Hex8 kernel in core.heat
     "relief": {"thermo", "common"},
     "process": {"thermo", "common"},
     "rupture": {"materials", "common"},
