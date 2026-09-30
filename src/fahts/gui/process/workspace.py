@@ -123,10 +123,10 @@ class ProcessWorkspace(QWidget):
         for w in (vessel.D, vessel.L, contents.hc, contents.water):
             w.valueChanged.connect(geometry_changed)
         self.btn_new.clicked.connect(self.new_case)
-        self.btn_open.clicked.connect(self._on_open)
-        self.btn_save.clicked.connect(self._on_save)
-        self.btn_save_as.clicked.connect(self._on_save_as)
-        self.btn_import.clicked.connect(self._on_import)
+        self.btn_open.clicked.connect(self.open_dialog)
+        self.btn_save.clicked.connect(self.save_current)
+        self.btn_save_as.clicked.connect(self.save_as_dialog)
+        self.btn_import.clicked.connect(self.import_dialog)
         self.btn_validate.clicked.connect(self.validate)
         self.btn_run.clicked.connect(self.start_run)
         self.btn_stop.clicked.connect(self.stop_run)
@@ -298,13 +298,24 @@ class ProcessWorkspace(QWidget):
         name = self._path.name if self._path else "unsaved case"
         self.title_changed.emit(f"{name}{' *' if dirty else ''}")
 
+    def confirm_close(self) -> bool:
+        """True if the workspace may be closed (asks about a running run / unsaved edits)."""
+        if self.is_running:
+            r = QMessageBox.question(self, "Run in progress", "Stop the running simulation?")
+            if r != QMessageBox.StandardButton.Yes:
+                return False
+            self.stop_run()
+            if self._worker is not None:
+                self._worker.wait()
+        return self._confirm_discard()
+
     def _confirm_discard(self) -> bool:
         if not self._dirty:
             return True
         r = QMessageBox.question(self, "Unsaved changes", "Discard the changes to this case?")
         return r == QMessageBox.StandardButton.Yes
 
-    def _on_open(self) -> None:
+    def open_dialog(self) -> None:
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open vessel case", "", CASE_FILTER)
@@ -314,20 +325,20 @@ class ProcessWorkspace(QWidget):
             except (ValueError, KeyError, TypeError, OSError) as e:
                 QMessageBox.warning(self, "Open vessel case", f"Could not open {path}:\n{e}")
 
-    def _on_save(self) -> None:
+    def save_current(self) -> None:
         if self._path is None:
-            self._on_save_as()
+            self.save_as_dialog()
         else:
             self.save(self._path)
 
-    def _on_save_as(self) -> None:
+    def save_as_dialog(self) -> None:
         name = (self.current_case().name or "case").replace(" ", "_")
         path, _ = QFileDialog.getSaveFileName(self, "Save vessel case", f"{name}.vcase.json",
                                               CASE_FILTER)
         if path:
             self.save(path)
 
-    def _on_import(self) -> None:
+    def import_dialog(self) -> None:
         if not self._confirm_discard():
             return
         folder = QFileDialog.getExistingDirectory(

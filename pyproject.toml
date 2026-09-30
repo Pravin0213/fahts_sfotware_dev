@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 fahts = "fahts.__main__:main"
+fahts-run = "fahts.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

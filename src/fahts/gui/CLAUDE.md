@@ -1,5 +1,10 @@
 # GUI Domain — FAHTS
 
+## Two workspaces (tabs of the main window)
+
+- **Structure (3-D)** — the original USFOS / fire-zone / 3-D heat solver view (below).
+- **Process vessel** — `gui/process/` (vessel in fire; see section at the end).
+
 ## Main Window — main_window.py (1251 lines)
 
 Central controller. Owns: `FEMModel`, `TemperatureField`, `list[FireZone|RadiationBall]`,
@@ -103,3 +108,30 @@ Key methods:
 - `_apply_visibility_filter` must reapply temperature when `_T_field` is set (post-rebuild restore)
 - `_mesh_inspector_data` is cached; invalidated when mesh config changes (set to None in `_on_mesh_preview_accepted`)
 - Inspector picking coexists with element picking — both modes active simultaneously; routing by cell data key
+
+---
+
+## Process vessel workspace — `gui/process/`
+
+Edits a `fahts.coupling.VesselCase`, runs it (`fahts.coupling.run_case`) and shows results.
+Created before the menus (`MainWindow._process_ws`); menu **Process** (new / open / save /
+import VessFire deck / check / run F6 / stop); `MainWindow.open_process_case(path)` (case JSON or
+deck folder; also `python -m fahts <case.vcase.json | deck folder>`).
+
+| File | Role |
+|---|---|
+| `workspace.py` | `ProcessWorkspace`: section list + forms, file actions, validation list, Run/Stop + progress, results area; `current_case()`, `load_case()`, `start_run()` |
+| `forms.py` | `_Form` contract (`set_case(case)` / `apply(case)` / `changed`); Case, Vessel & material, Relief valves, Surroundings, Stress & run, Model options |
+| `contents_form.py` | initial conditions, liquid depths (fill %), composition + pseudo-components, presets, **Check initial state** (builds the real model) |
+| `fire_form.py` | heat-load table, quick fill, peak (jet) zone, flux + end/side-view sketches |
+| `run_worker.py` | `CaseRunWorker` QThread (progress / finished_ok / error / cancelled) |
+| `results_view.py` | summary, plots (pressure, temperatures, inventory, release, stress), failure-time table, CSV / Excel export |
+| `fields.py` | `dspin` → `ExactDoubleSpinBox` (keeps the exact loaded value unless the user edits it) |
+
+Gotchas:
+- A form only touches its own part of the case; `current_case()` applies all forms to a copy.
+- Add a section: write a `_Form`, then `ProcessWorkspace.add_form(title, form)`.
+- Wall regions without area are not plotted (`fahts.coupling.report.regions_with_area`).
+- Numbers are shown in the user's locale (comma decimal separator on this machine).
+- Tests: `tests/gui/` run offscreen (no VTK); `tests/test_main_window_process.py` needs a display.
+

@@ -2,9 +2,11 @@
 
 ## Current State
 
-Non-GUI (2026-09-30): **1047 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
+Non-GUI (2026-09-30): **1096 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
 22 golden tests skipped unless `--golden`.
 GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
+Process-vessel GUI widgets: `tests/gui/` run offscreen (no VTK) and are part of the default run;
+`tests/test_main_window_process.py` needs a display like the other main-window tests.
 
 ```bash
 cd /home/oslprb/vessfire_heatsolver

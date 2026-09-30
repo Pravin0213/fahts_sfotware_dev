@@ -7,6 +7,8 @@ Usage
 -----
     python -m fahts                                  # open empty application
     python -m fahts examples/models/model_file.fem   # open with model pre-loaded
+    python -m fahts my_case.vcase.json               # open a vessel case (process tab)
+    python -m fahts path/to/vessfire_deck_folder     # import a VessFire input deck
     fahts examples/models/model_file.fem             # same, after pip install -e .
 """
 
@@ -108,7 +110,11 @@ def main() -> None:
     window.show()
 
     if fem_file:
-        window.open_file(fem_file)
+        # a vessel case (*.json) or a VessFire deck folder opens in the process workspace
+        if fem_file.is_dir() or fem_file.suffix.lower() == ".json":
+            window.open_process_case(fem_file)
+        else:
+            window.open_file(fem_file)
 
     sys.exit(app.exec())
 

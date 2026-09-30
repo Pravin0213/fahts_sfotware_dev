@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("FAHTS — Fire Analysis and Heat Transfer Software")
         self.resize(1400, 900)
 
+        self._process_ws = ProcessWorkspace()   # needed by the Process menu and the central tabs
         self._build_actions()
         self._build_menu()
         self._build_toolbar()
@@ -495,6 +496,30 @@ class MainWindow(QMainWindow):
         self._export_results_menu = export_results_m
 
         # Help
+        # Process vessel (vessel in fire) workspace
+        proc_m = mb.addMenu("&Process")
+        ws = self._process_ws
+        for text, slot, key in (
+            ("&New Vessel Case", ws.new_case, "Ctrl+Shift+N"),
+            ("&Open Vessel Case…", ws.open_dialog, "Ctrl+Shift+O"),
+            ("&Save Vessel Case", ws.save_current, "Ctrl+Shift+S"),
+            ("Save Vessel Case &As…", ws.save_as_dialog, None),
+            (None, None, None),
+            ("&Import VessFire Input Deck…", ws.import_dialog, None),
+            (None, None, None),
+            ("&Check Inputs", ws.validate, None),
+            ("&Run Vessel Case", ws.start_run, "F6"),
+            ("S&top Run", ws.stop_run, None),
+        ):
+            if text is None:
+                proc_m.addSeparator()
+                continue
+            act = QAction(text, self)
+            if key:
+                act.setShortcut(key)
+            act.triggered.connect(lambda _=False, f=slot: (self._show_process_tab(), f()))
+            proc_m.addAction(act)
+
         help_m = mb.addMenu("&Help")
         help_m.addAction(self._action_about)
 
@@ -651,7 +676,6 @@ class MainWindow(QMainWindow):
         # Two workspaces: the 3-D structure (above) and the process vessel (vessel in fire)
         self._workspace_tabs = QTabWidget(self)
         self._workspace_tabs.addTab(main_splitter, "Structure (3-D)")
-        self._process_ws = ProcessWorkspace()
         self._process_ws.status_message.connect(self._status)
         self._process_ws.title_changed.connect(
             lambda t: self._workspace_tabs.setTabText(1, f"Process vessel — {t}"))
@@ -1381,7 +1405,25 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self._on_clear_recent)
         self._recent_menu.addAction(clear_action)
 
+    def _show_process_tab(self) -> None:
+        self._workspace_tabs.setCurrentWidget(self._process_ws)
+
+    def open_process_case(self, path: Path | str) -> None:
+        """Open a vessel case file (*.vcase.json) or import a VessFire input-deck folder."""
+        path = Path(path)
+        self._show_process_tab()
+        try:
+            if path.is_dir():
+                self._process_ws.import_deck(path)
+            else:
+                self._process_ws.open_file(path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.critical(self, "Open vessel case", f"{path}:\n{exc}")
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if not self._process_ws.confirm_close():
+            event.ignore()
+            return
         self._anim_stop()
         self._plotter.close()
         super().closeEvent(event)

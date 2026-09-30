@@ -53,8 +53,10 @@ vessfire_heatsolver/
 │   ├── process/           ✅ geometry, zones, fluid property dicts, inner_ht/ (wall→fluid, interface)
 │   ├── relief/            ✅ blowdown (real-gas nozzle + Fanno line), ideal-gas fallback, PSV
 │   ├── rupture/           ✅ stress solutions, axisymmetric FE, failure times
-│   ├── coupling/          ✅ VesselFireModel (process model driver) — see coupling/CLAUDE.md
-│   └── cli.py             ⬜ headless case runner
+│   ├── coupling/          ✅ VesselCase (inputs, JSON), run_case, VesselFireModel, VessFire deck
+│   │                         import, report — see coupling/CLAUDE.md
+│   ├── gui/process/       ✅ "Process vessel" tab of the GUI — see gui/CLAUDE.md
+│   └── cli.py             ✅ fahts-run: headless vessel-case runner
 ├── tests/                 ✅ (target: unit/<pkg>/, integration/, regression/)
 │   └── regression/process/ ✅ golden outputs of legacy/vfpy — run with --golden when porting
 ├── validation/            ✅ runnable benchmarks + reports
@@ -196,5 +198,7 @@ pip install -e ".[gui,process,dev]"               # once (editable install)
 python main.py                                    # empty app (or: python -m fahts)
 python main.py examples/models/model_file.fem     # BOX-only model
 python main.py examples/models/model_t1.fem       # mixed sections
+python main.py my_case.vcase.json                 # vessel case in the Process vessel tab
+fahts-run my_case.vcase.json --out results.xlsx   # vessel case without the GUI
 python -m pytest tests/ -q                        # run all tests
 ```
