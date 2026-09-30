@@ -75,6 +75,10 @@ G_ACC = 9.81  # see docs/process_model_known_issues.md #5 (two gravity values)
 P_ATM = 101325.0
 
 
+class SimulationCancelled(RuntimeError):
+    """Raised by ``VesselFireModel.run`` when the cancel callback returns True."""
+
+
 @dataclass
 class StepContext:
     """Values computed during one time step and handed from one stage to the next."""
@@ -265,13 +269,21 @@ class VesselFireModel:
         self.next_out = 0.0
 
     # ================================================================ run
-    def run(self) -> tuple[pd.DataFrame, dict]:
+    def run(self, progress=None, cancel=None) -> tuple[pd.DataFrame, dict]:
+        """Run to the end time. ``progress(time_s, t_end_s)`` is called after every output
+        row; ``cancel()`` is polled every step and a True result raises SimulationCancelled."""
         for c in self.cols.values():
             c.q_net_out, _, c.q_rad_out, c.q_conv_out = c.outer(c.T_outer, 0.0)
         self._record(0.0)
         self.next_out = self.out_every
+        n_rows = len(self.rows)
         for step in range(1, self.n_steps + 1):
+            if cancel is not None and cancel():
+                raise SimulationCancelled(f"cancelled at t = {(step - 1) * self.dt:g} s")
             self.step(step)
+            if progress is not None and len(self.rows) != n_rows:
+                n_rows = len(self.rows)
+                progress(step * self.dt, self.n_steps * self.dt)
         meta = dict(
             fluid=" ".join(f"{k} {v:g}" for k, v in self.fl.items()) + " [PR two-phase]",
             V=self.V,
