@@ -21,6 +21,7 @@ drives the rupture check.
 from __future__ import annotations
 
 import numpy as np
+from scipy.interpolate import PchipInterpolator
 
 from fahts.process.fluid_properties import film_gas, phase_dict
 from fahts.process.inner_ht.boiling_curve import boiling_flux_and_derivative
@@ -34,17 +35,31 @@ G_ACC = 9.81  # as the 1-D path (docs/process_model_known_issues.md #5)
 REGIONS = ("background", "wet", "peak", "peak_wet", "hot")
 
 
-def sampled_curve(fn, T_nodes: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
-    """Evaluate a scalar function f(T) on ``n`` temperatures spanning the node temperatures,
-    then interpolate value and slope at every node (piecewise linear, slope from the grid)."""
-    lo, hi = float(np.min(T_nodes)), float(np.max(T_nodes))
+def sampled_curve(fn, T_nodes: np.ndarray, n: int, use: np.ndarray | None = None
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate a scalar function f(T) on ``n`` temperatures and interpolate value and slope
+    at every node (monotone cubic).
+
+    The sample temperatures are quantiles of the temperatures of the nodes that USE the
+    curve (``use`` mask; e.g. only wetted nodes for the boiling curve): resolution goes where
+    those nodes are. Sampling over all nodes put 45 K between samples when a jet heats the
+    dry wall to 1000 K, and the steep boiling curve (q ~ dT^3 near saturation) was then
+    interpolated wrong by orders of magnitude on the wetted nodes."""
+    T_use = T_nodes[use] if use is not None and np.any(use) else T_nodes
+    lo, hi = float(np.min(T_use)), float(np.max(T_use))
     if hi - lo < 1e-6:
         f0 = fn(lo)
         return np.full(T_nodes.shape, f0), np.full(T_nodes.shape, (fn(lo + 0.05) - f0) / 0.05)
-    grid = np.linspace(lo - 0.02 * (hi - lo) - 0.05, hi + 0.02 * (hi - lo) + 0.05, n)
+    q = np.quantile(T_use, np.linspace(0.0, 1.0, n))
+    pad = 0.02 * (hi - lo) + 0.05
+    grid = np.unique(np.concatenate(([lo - pad], q, [hi + pad])))
+    grid = grid[np.concatenate(([True], np.diff(grid) > 1e-6))]
     vals = np.array([fn(float(T)) for T in grid])
-    slope = np.gradient(vals, grid)
-    return np.interp(T_nodes, grid, vals), np.interp(T_nodes, grid, slope)
+    # monotone cubic (PCHIP): follows steep smooth curves (boiling, radiation) closely and
+    # gives a consistent derivative for the implicit linearisation; flat beyond the grid
+    f = PchipInterpolator(grid, vals, extrapolate=False)
+    Tc = np.clip(T_nodes, grid[0], grid[-1])
+    return f(Tc), f.derivative()(Tc)
 
 
 class Wall3DCoupling:
@@ -140,7 +155,7 @@ class Wall3DCoupling:
             dTg = abs(Tw - G.T)
             return corr(ra_coef * dTg, Pr) * pg["k"] / md.D if dTg > 1e-3 else 0.0
 
-        h_n, dh_n = sampled_curve(h_gas, T_in, self.n_curve)
+        h_n, dh_n = sampled_curve(h_gas, T_in, self.n_curve, use=A_dry > 0)
         q_cv = h_n * (T_in - T_fl)  # W/m2 out of the wall
         dq_cv = h_n + dh_n * (T_in - T_fl)
         h_r = T_ref_r = 0.0
@@ -171,7 +186,7 @@ class Wall3DCoupling:
         if c.liq_present and A_wet.sum() > 0:
             T_wet_mean = float(np.average(T_in, weights=A_wet))
             fn, regime = self._wet_curve(sd, T_wet_mean)
-            q_wt, dq_wt = sampled_curve(fn, T_in, self.n_curve)
+            q_wt, dq_wt = sampled_curve(fn, T_in, self.n_curve, use=A_wet > 0)
             h_wet = float(
                 np.average(
                     np.divide(
