@@ -30,7 +30,11 @@
     "M10-0001": "CH4 250 kW/m2 fire, stress type Y (rupture)",
     "M11-0002": "C1 + pseudo-component liquid, fire + BDV",
     "M12-0004": "gas + free water, fire + BDV",
-    "M15-0002": "retrograde rich gas, fire + BDV"
+    "M15-0002": "retrograde rich gas, fire + BDV",
+    "M06-0030": "CH4, peak zone at the bottom (dry, gas only)",
+    "M06-0069": "LPG, peak zone at the bottom (wetted)",
+    "M06-0070": "LPG, peak zone on top (dry above the liquid)",
+    "M14-0095": "H2 + PSV, peak zone on the side (partly wetted)"
   },
   "runs": {
     "M03-0003__vf__600s": {
@@ -122,6 +126,26 @@
       "run": "M11-0002__vf__3600s",
       "rows": 361,
       "seconds": 183.9
+    },
+    "M06-0030__vf__1200s": {
+      "run": "M06-0030__vf__1200s",
+      "rows": 121,
+      "seconds": 18.6
+    },
+    "M06-0069__vf__1200s": {
+      "run": "M06-0069__vf__1200s",
+      "rows": 121,
+      "seconds": 41.4
+    },
+    "M06-0070__vf__1200s": {
+      "run": "M06-0070__vf__1200s",
+      "rows": 121,
+      "seconds": 40.2
+    },
+    "M14-0095__vf__1200s": {
+      "run": "M14-0095__vf__1200s",
+      "rows": 121,
+      "seconds": 19.7
     }
   },
   "history": [
@@ -134,7 +158,12 @@
       "date": "2026-09-30",
       "base_commit": "9e302fa+changes",
       "reason": "Known issue #1 fixed: wall grid follows the case wall thickness (radial_nodes, 10 cells) instead of the 105 mm grid; see validation/vessfire/reports/wall_grid_fix.md"
+    },
+    {
+      "date": "2026-09-30",
+      "base_commit": "ee7563c+changes",
+      "reason": "Known issue #10: local (jet) peak fire zone modelled as separate wall regions; new golden cases M06-0030, M06-0069, M06-0070, M14-0095 (existing goldens unchanged)"
     }
   ],
-  "base_commit": "9e302fa+changes"
+  "base_commit": "ee7563c+changes"
 }

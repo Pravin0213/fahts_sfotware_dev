@@ -23,3 +23,16 @@ def test_cells_and_errors():
         radial_nodes(0.0)
     with pytest.raises(ValueError):
         radial_nodes(0.05, n_cells=0)
+
+
+def test_steel_table_rejects_gaps_and_unsorted_T(steel):
+    from fahts.materials import SteelTable
+    kw = dict(name="x", T=steel.T, cp=steel.cp.copy(), k=steel.k, rho=7850.0,
+              f_yield=steel.f_yield, f_uts=steel.f_uts)
+    kw["cp"][3] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        SteelTable(**kw)
+    kw["cp"] = steel.cp
+    kw["T"] = steel.T[::-1].copy()
+    with pytest.raises(ValueError, match="increasing"):
+        SteelTable(**kw)

@@ -106,6 +106,9 @@ def metrics(py: pd.DataFrame, meta: dict, vf: pd.DataFrame, summ: dict) -> dict:
                                                / np.maximum(np.abs(P_vf), 1.0)) ** 2))),
         Tgas_rms_K=_rms(ip("T_gas_C"), vf.T_gas_C),
         Tdry_rms_K=_rms(ip("background_T_mean_C"), vf.T_hot_mean_C),
+        # hottest wall region that has area (peak zone when modelled) vs VessFire's hottest
+        # location; T_mean_hot_C is also what the membrane rupture check uses
+        Thot_rms_K=_rms(ip("T_mean_hot_C"), vf.T_hot_mean_C),
         # signed means (model - VessFire): which way the model is off
         P_bias_pct=100 * float(np.mean((ip("P_barg") - P_vf) / np.maximum(np.abs(P_vf), 1.0))),
         Tgas_bias_K=float(np.mean(ip("T_gas_C") - vf.T_gas_C)),
@@ -170,6 +173,16 @@ def _run_one(args) -> dict:
     return row
 
 
+def peak_cases() -> list[Path]:
+    """All completed, horizontal, uninsulated cases whose heat load has a distinct peak zone."""
+    idx = pd.read_csv(VALIDATION_SET / "results_index.csv", low_memory=False)
+    ok = idx[(idx.status == "completed") & (idx.orientation == "H") & idx.insulation.isna()
+             & idx.fire_q_pk.notna() & (idx.fire_q_pk != idx.fire_q_bg)]
+    ids = set(ok.case_id)
+    return sorted(p for p in (VALIDATION_SET / "cases").glob("*/*")
+                  if p.name[:8] in ids and (p / "results.zip").exists())
+
+
 def select_cases(per_module: int, seed: int = 0, include: tuple[str, ...] = ()) -> list[Path]:
     """Completed, horizontal, uninsulated cases: ``per_module`` random per module + include."""
     idx = pd.read_csv(VALIDATION_SET / "results_index.csv", low_memory=False)
@@ -226,7 +239,7 @@ def run_calibration(name: str, baseline: dict, options: dict[str, tuple[dict, st
     return df
 
 
-AB_METRICS = ["P_rms_pct", "Tgas_rms_K", "Tdry_rms_K", "Twet_rms_K", "Tliq_rms_K",
+AB_METRICS = ["P_rms_pct", "Tgas_rms_K", "Tdry_rms_K", "Thot_rms_K", "Twet_rms_K", "Tliq_rms_K",
               "rupt_Tr_err_s", "rupt_vM_err_s"]
 
 
@@ -266,7 +279,7 @@ def summarize_calibration(name: str, options: dict[str, tuple[dict, str]]) -> st
 
 
 # ------------------------------------------------------------------ report
-METRICS = ["P_rms_pct", "Tgas_rms_K", "Tdry_rms_K", "Twet_rms_K", "Tliq_rms_K",
+METRICS = ["P_rms_pct", "Tgas_rms_K", "Tdry_rms_K", "Thot_rms_K", "Twet_rms_K", "Tliq_rms_K",
            "rupt_err_s", "energy_err_abs_pct", "P_bias_pct", "Tgas_bias_K", "Tdry_bias_K",
            "Twet_bias_K", "Qfire_err_pct"]
 
@@ -318,6 +331,10 @@ GOLDEN_CASES = ("M03-0003", "M04-0003", "M05-0003", "M06-0003", "M07-0004", "M08
                 "M09-0001", "M10-0001", "M11-0002", "M12-0004", "M15-0002")
 
 STUDIES = {
+    "peak_zone": {
+        "before (background flux only)": dict(peak_zone=False),
+        "after (peak zone regions)": dict(),
+    },
     "fire_boundary": {
         "baseline": dict(),
         "flux=balance": dict(flux="balance"),
@@ -363,6 +380,8 @@ def main(argv: list[str]) -> None:
         return
     if "--report-only" not in argv:
         cases = select_cases(per_module, seed=seed, include=GOLDEN_CASES)
+        if name == "peak_zone":
+            cases = peak_cases()
         if name == "fire_boundary":         # only fire cases (from the calibration features)
             base = pd.read_csv(REPORTS / "calibration_recheck.csv")
             fire = set(base[(base.config == "baseline") & (base.f_fire == True)].case)  # noqa: E712

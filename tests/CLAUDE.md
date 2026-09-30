@@ -2,8 +2,8 @@
 
 ## Current State
 
-Non-GUI (2026-09-30): **1006 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
-18 golden tests skipped unless `--golden`.
+Non-GUI (2026-09-30): **1047 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
+22 golden tests skipped unless `--golden`.
 GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
 
 ```bash
@@ -56,9 +56,10 @@ must parse cleanly — smoke tests for both exist.
 Freeze the results of the product process model (`fahts.coupling`) so every change in numbers
 is visible and deliberate. **Run `--golden` after any change to the process-model packages.**
 
-- `cases/<id>/` — 11 input decks (Admin/Segment/Scenario.brl, heatload.scn), one per physics
-  branch (H2/CH4/LPG/pseudo/free water/retrograde; fire, BDV, PSV, ambient, rupture)
-- `golden/` — 18 runs: time series + rupture table per (case, profile, duration);
+- `cases/<id>/` — 15 input decks (Admin/Segment/Scenario.brl, heatload.scn), one per physics
+  branch (H2/CH4/LPG/pseudo/free water/retrograde; fire, BDV, PSV, ambient, rupture;
+  jet-fire peak zone bottom / top / side)
+- `golden/` — 22 runs: time series + rupture table per (case, profile, duration);
   `manifest.json`: library versions, git commit, and a `history` of why goldens changed
 - `harness.py` — `IMPLEMENTATIONS`: `fahts` (checked) and `legacy` (frozen vfpy; diagnostics
   and before/after studies only). History: goldens came from legacy until the port was verified

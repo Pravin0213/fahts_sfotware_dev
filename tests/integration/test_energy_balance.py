@@ -31,3 +31,10 @@ def test_energy_balance_closes_and_converges(steel, case_id):
         err[dt] = abs(ts.energy_err_pct.iloc[-1])
     assert err[1.0] < 1.5
     assert err[0.25] < max(err[1.0] / 3.0, 1e-3)
+
+
+def test_energy_balance_with_peak_zone(steel):
+    """Four wall regions (background/peak x dry/wet) with a moving liquid level."""
+    ts, _ = simulate(read_case(CASES / "M06-0070"), VesselFireOptions(t_end=300.0), steel)
+    assert "peak_T_mean_C" in ts
+    assert abs(ts.energy_err_pct.iloc[-1]) < 1.5

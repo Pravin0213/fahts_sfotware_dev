@@ -65,6 +65,11 @@ CASES: dict[str, str] = {
     "M11-0002": "C1 + pseudo-component liquid, fire + BDV",
     "M12-0004": "gas + free water, fire + BDV",
     "M15-0002": "retrograde rich gas, fire + BDV",
+    # local (jet) peak fire zone, known issue #10
+    "M06-0030": "CH4, peak zone at the bottom (dry, gas only)",
+    "M06-0069": "LPG, peak zone at the bottom (wetted)",
+    "M06-0070": "LPG, peak zone on top (dry above the liquid)",
+    "M14-0095": "H2 + PSV, peak zone on the side (partly wetted)",
 }
 
 # Option sets. "vf" = current default (VessFire-matching, MODEL_CHOICES.md N5);
@@ -76,14 +81,17 @@ PROFILES: dict[str, dict] = {
 }
 
 _NO_FIRE = ("M03-0003", "M04-0003", "M05-0003")
+_UNIFORM_FIRE = tuple(c for c in CASES if c not in ("M06-0030", "M06-0069", "M06-0070",
+                                                    "M14-0095"))
 _LIQUID = ("M05-0003", "M11-0002", "M12-0004", "M15-0002")
 
 # Short runs of every case (fast), physics profile on the liquid cases, and three
 # full-hour runs for rupture timing and late-stage behaviour (liquid-full, dense relief).
 RUNS: list[GoldenRun] = (
-    [GoldenRun(c, "vf", 600.0 if c in _NO_FIRE else 900.0) for c in CASES]
+    [GoldenRun(c, "vf", 600.0 if c in _NO_FIRE else 900.0) for c in _UNIFORM_FIRE]
     + [GoldenRun(c, "physics", 600.0 if c in _NO_FIRE else 900.0) for c in _LIQUID]
     + [GoldenRun(c, "vf", 3600.0) for c in ("M06-0003", "M10-0001", "M11-0002")]
+    + [GoldenRun(c, "vf", 1200.0) for c in ("M06-0030", "M06-0069", "M06-0070", "M14-0095")]
 )
 
 OUT_EVERY = 10.0          # s between output rows

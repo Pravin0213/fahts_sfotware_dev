@@ -48,4 +48,5 @@ Note that VessFire's `TS_max` is the hottest-location wall temperature while the
 wall is an area average, so "dry wall unbiased" may mean the model's wall holds slightly too
 much heat — consistent with a gas side that is too weak.
 
-**B. Local (jet) fire zone ignored** — known issue #10. Decisive for rupture in jet fires.
+**B. Local (jet) fire zone** — resolved 2026-09-30 (known issue #10): modelled as wall regions,
+on by default (`peak_zone=True`). Evidence: `validation/vessfire/reports/peak_zone.md`.

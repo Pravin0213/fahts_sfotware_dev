@@ -21,6 +21,18 @@ Compare against VessFire with `python -m validation.vessfire.compare_cases <stud
 | `rupture` | stress solutions, axisymmetric FE, failure times | materials, common |
 | `coupling` | `VesselFireModel` — the only place that combines the above | all |
 
+## Wall regions
+
+One 1-D `WallColumn` per region, weighted by area fraction (`self.frac`, sums to 1):
+`dry` / `wet` (background fire, above / below the liquid) and, when the heat load has a local
+peak flux different from the background (jet fire), `peak_dry` / `peak_wet`
+(`wall_regions.region_fractions`: peak zone = length `xi_start..xi_end` x arc
+`attack_deg +- circ_deg/2`, angle from the top). Level changes re-weight each dry/wet pair with
+energy-conserving mixing. Regions with zero area are still stepped (legacy behaviour) but never
+contribute to heat sums, energy or the hot-spot/rupture check (`T_mean_hot_C` = hottest region
+with area); their temperatures in the output are meaningless. Option `peak_zone=False` restores
+background-only fire.
+
 ## `VesselFireModel.step()` stages (debug one at a time)
 
 `_refresh_saturation` → `_valve_flows` → `_dry_wall` → `_wet_wall` → `_interface` →

@@ -1,0 +1,14 @@
+HeatFormat 1.11
+Peak flux area description
+Longitudinal direction, start [0 - 1]:  0.400000
+                          end [0 - 1]:  0.600000
+Circumferential length      [0 - 360]:   90.0000
+Angle of attack (from top)  [0 - 360]:  180.0000
+
+Flame temperature                 [K]:   1306.45
+
+Time	Background flux	Peak flux
+[s]	[kW/m2]	[kW/m2]
+0.00000	100.0000	250.0000
+3600.00000	100.0000	250.0000
+3601.00000	0.0000	0.0000

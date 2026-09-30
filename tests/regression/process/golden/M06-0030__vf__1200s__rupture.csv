@@ -1,0 +1,23 @@
+variant,allow_basis,criterion,t_fail_s,location
+membrane,mean,vonMises,825.27259803273409,mem
+membrane,local,vonMises,668.3158080752379,mem
+limit,through-wall avg,vonMises,833.43241242096087,mem
+lame,local,vonMises,690.85232415774851,out
+lame,mean,vonMises,817.87666077439712,in
+thermal_elastic,local,vonMises,660.97835096326742,in
+thermal_elastic,mean,vonMises,592.05877393274341,in
+thermal_tg,local,vonMises,792.38549971020416,in
+thermal_tg,mean,vonMises,627.81361344420009,in
+thermal_2x,local,vonMises,971.55003583852931,in
+thermal_2x,mean,vonMises,827.51407189698477,in
+membrane,mean,Tresca,786.90895044845956,mem
+membrane,local,Tresca,634.74766438956124,mem
+limit,through-wall avg,Tresca,792.18769412060874,mem
+lame,local,Tresca,657.26942038038317,out
+lame,mean,Tresca,778.36979792455065,in
+thermal_elastic,local,Tresca,598.15050378396995,in
+thermal_elastic,mean,Tresca,532.20829669013358,in
+thermal_tg,local,Tresca,645.29185963081693,in
+thermal_tg,mean,Tresca,566.41119161509187,in
+thermal_2x,local,Tresca,915.610592361361,in
+thermal_2x,mean,Tresca,791.69772748661217,in
