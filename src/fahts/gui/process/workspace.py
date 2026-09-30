@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QListWidget, QLis
 from fahts.coupling.vessel_case import VesselCase
 from fahts.coupling.vessfire_import import case_from_vessfire_deck
 from fahts.gui.process.contents_form import ContentsForm
+from fahts.gui.process.fire_form import FireForm
 from fahts.gui.process.forms import (AmbientForm, CaseInfoForm, OptionsForm, ReliefForm,
                                      StressRunForm, VesselForm)
 
@@ -89,6 +90,7 @@ class ProcessWorkspace(QWidget):
         self.add_form("Case", CaseInfoForm())
         self.add_form("Vessel & material", VesselForm())
         self.add_form("Contents", ContentsForm())
+        self.add_form("Fire", FireForm())
         self.add_form("Relief valves", ReliefForm())
         self.add_form("Surroundings", AmbientForm())
         self.add_form("Stress & run", StressRunForm())
@@ -97,9 +99,15 @@ class ProcessWorkspace(QWidget):
         contents, vessel = self.form(ContentsForm), self.form(VesselForm)
         contents.btn_check.clicked.connect(
             lambda: contents.check_initial_state(self.current_case()))
-        for w in (vessel.D, vessel.L):
-            w.valueChanged.connect(lambda *_: contents.set_geometry(vessel.D.value(),
-                                                                    vessel.L.value()))
+        fire = self.form(FireForm)
+
+        def geometry_changed(*_):
+            D, L = vessel.D.value(), vessel.L.value()
+            contents.set_geometry(D, L)
+            fire.set_geometry(D, L, contents.hc.value() + contents.water.value())
+
+        for w in (vessel.D, vessel.L, contents.hc, contents.water):
+            w.valueChanged.connect(geometry_changed)
         self.btn_new.clicked.connect(self.new_case)
         self.btn_open.clicked.connect(self._on_open)
         self.btn_save.clicked.connect(self._on_save)

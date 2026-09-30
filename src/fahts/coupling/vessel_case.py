@@ -196,6 +196,8 @@ class VesselCase:
             if not (p.get("sg", 0) > 0 and p.get("Tb_K", 0) > 0):
                 e.append(f"pseudo-component {name}: SG/API and Tb must be > 0")
         n = len(h.times_s)
+        if not all(math.isfinite(v) for v in h.times_s + h.q_background_kW_m2 + h.q_peak_kW_m2):
+            e.append("heat load: every time and flux entry must be a number")
         if n < 1 or len(h.q_background_kW_m2) != n or len(h.q_peak_kW_m2) != n:
             e.append("heat load: time, background and peak columns must have equal length >= 1")
         elif any(b <= a for a, b in zip(h.times_s, h.times_s[1:])):
