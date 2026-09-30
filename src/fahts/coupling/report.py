@@ -11,7 +11,7 @@ REGIONS = (
     ("wet", "wetted wall"),
     ("peak", "peak zone (dry)"),
     ("peak_wet", "peak zone (wetted)"),
-    ("hot", "hottest point (3-D wall)"),
+    ("hot", "hottest point"),
 )
 
 
@@ -22,8 +22,8 @@ def _fmt_time(t) -> str:
 
 
 def regions_with_area(res: CaseResult) -> list[str]:
-    """Wall regions that have area at some time. Regions without area are still integrated
-    by the model but their temperatures are meaningless, so they are not shown."""
+    """Wall regions that have area at some time (the model writes no temperatures for a
+    region while it has no area), plus the hottest point of the wall."""
     ts = res.series
     out = []
     for col, _ in REGIONS:

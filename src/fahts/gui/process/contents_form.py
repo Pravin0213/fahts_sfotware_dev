@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QGridLayout, QHeaderV
                              QVBoxLayout)
 
 from fahts.coupling.vessel_case import VesselCase
-from fahts.coupling.vessel_fire_1d import VesselFireModel
+from fahts.coupling.vessel_fire_model import VesselFireModel
 from fahts.gui.process.fields import dspin, form_group
 from fahts.gui.process.forms import _Form
 from fahts.process.geometry import VesselGeometry

@@ -77,6 +77,6 @@ def test_regions_without_area_are_not_shown(qapp):
     case, _ = case_from_vessfire_deck(CASES / "M06-0030")       # CH4, no liquid, peak bottom
     case.run.t_end_s = 60.0
     res = run_case(case)
-    assert regions_with_area(res) == ["background", "peak"]
+    assert regions_with_area(res) == ["background", "peak", "hot"]
     labels = dict(summary_lines(res))
-    assert labels["Wall regions"] == "dry wall, peak zone (dry)"
+    assert labels["Wall regions"] == "dry wall, peak zone (dry), hottest point"

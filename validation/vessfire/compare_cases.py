@@ -43,11 +43,6 @@ VALIDATION_SET = ROOT / "data" / "reference" / "vessfire" / "validation_set"
 REPORTS = Path(__file__).resolve().parent / "reports"
 P_ATM = 101325.0
 
-# vfpy's wall grid (node positions from the inner surface for a 105 mm shell), used for
-# every vessel before known issue #1 was fixed. Reproduces the "before" state.
-LEGACY_NODES_105MM = (0.0, 0.00525, 0.01575, 0.02625, 0.03675, 0.04725,
-                      0.05775, 0.06825, 0.07875, 0.08925, 0.1017, 0.105)
-
 
 # ------------------------------------------------------------------ VessFire results
 def _vre(txt: str) -> pd.DataFrame:
@@ -330,11 +325,9 @@ def summarize(name: str, df: pd.DataFrame | None = None) -> str:
 GOLDEN_CASES = ("M03-0003", "M04-0003", "M05-0003", "M06-0003", "M07-0004", "M08-0001",
                 "M09-0001", "M10-0001", "M11-0002", "M12-0004", "M15-0002")
 
+# Studies of the removed 1-D wall model ("wall_grid_fix", "wall3d": 1-D vs 3-D) cannot be
+# re-run; their reports stay in reports/ as the record.
 STUDIES = {
-    "wall3d": {
-        "1-D wall (regions)": dict(),
-        "3-D wall (Hex8 shell)": dict(wall_model="3d"),
-    },
     "peak_zone": {
         "before (background flux only)": dict(peak_zone=False),
         "after (peak zone regions)": dict(),
@@ -344,11 +337,6 @@ STUDIES = {
         "flux=balance": dict(flux="balance"),
         "eps_surf_fire=0.85": dict(eps_surf_fire=0.85),
         "rad_internal=False": dict(rad_internal=False),
-    },
-    "wall_grid_fix": {
-        "before (105 mm grid)": dict(wall_nodes=LEGACY_NODES_105MM),
-        "after (real t, 10 cells)": dict(),
-        "after (real t, 20 cells)": dict(wall_cells=20),
     },
 }
 
@@ -386,8 +374,6 @@ def main(argv: list[str]) -> None:
         cases = select_cases(per_module, seed=seed, include=GOLDEN_CASES)
         if name == "peak_zone":
             cases = peak_cases()
-        if name == "wall3d":                  # the sample + every jet-fire case
-            cases = sorted(set(cases) | set(peak_cases()))
         if name == "fire_boundary":         # only fire cases (from the calibration features)
             base = pd.read_csv(REPORTS / "calibration_recheck.csv")
             fire = set(base[(base.config == "baseline") & (base.f_fire == True)].case)  # noqa: E712

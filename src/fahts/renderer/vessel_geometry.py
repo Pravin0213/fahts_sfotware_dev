@@ -22,7 +22,6 @@ from fahts.wall.fem_3d.shell_mesh import _merge_close
 from fahts.coupling.vessel_case import VesselCase
 
 REGION_KEYS = ("dry", "wet", "peak_dry", "peak_wet")
-REGION_COLUMNS = {"dry": "background", "wet": "wet", "peak_dry": "peak", "peak_wet": "peak_wet"}
 CUTAWAYS = {"none": None, "quarter": (0.0, 90.0), "half": (0.0, 180.0)}  # removed arc, from top
 
 
@@ -129,8 +128,6 @@ class VesselGeometry3D:
         c = self.wall.cell_centers().points
         self._w_theta = np.degrees(np.arctan2(c[:, 1], c[:, 2])) % 360.0
         self._w_xi = c[:, 0] / self.L
-        # depth below the inner surface in real (not exaggerated) metres
-        self._w_depth = (np.hypot(c[:, 1], c[:, 2]) - self.R) / self.thickness_scale
         if self.peak is not None:
             p = self.peak
             self._w_peak = ((self._w_xi >= p.xi_start) & (self._w_xi <= p.xi_end)
@@ -145,29 +142,9 @@ class VesselGeometry3D:
         region = np.where(self._w_peak, np.where(wet, 3, 2), np.where(wet, 1, 0))
         self.wall.cell_data["region"] = region.astype(np.int32)
 
-    def paint_wall(self, temperatures: dict) -> None:
-        """Cell scalar ``T_C`` on the solid wall. Per region either one temperature (float) or a
-        through-thickness profile ``(x_nodes_m, T_nodes_C)`` interpolated at each cell's depth."""
-        if self.wall is None:
-            self._build_wall()
-        region = self.wall.cell_data["region"]
-        T = np.full(self.wall.n_cells, np.nan)
-        for i, key in enumerate(REGION_KEYS):
-            v = temperatures.get(key)
-            if v is None:
-                continue
-            m = region == i
-            if isinstance(v, tuple):
-                x_nodes, T_nodes = v
-                depth = self._w_depth[m] * (x_nodes[-1] / self.t)   # to the model's grid
-                T[m] = np.interp(depth, x_nodes, T_nodes)
-            else:
-                T[m] = float(v)
-        self.wall.cell_data["T_C"] = T
-
     def wall_surface(self, cutaway: str = "none") -> pv.PolyData:
         """Visible surface of the solid wall (outer, inner, ends and cut faces) with the
-        wall's cell data (``region``, ``T_C``)."""
+        wall's cell data (``region``)."""
         if self.wall is None:
             self._build_wall()
         cut = CUTAWAYS[cutaway]
@@ -198,39 +175,6 @@ class VesselGeometry3D:
         if cutaway == "half":
             body = _surface(body.clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=True))
         return body
-
-    # ------------------------------------------------------------------ results
-    def paint(self, temperatures: dict[str, float]) -> None:
-        """Cell scalar ``T_C`` from per-region temperatures (keys as in REGION_KEYS)."""
-        r = self.shell.cell_data["region"]
-        vals = np.array([temperatures.get(k, np.nan) for k in REGION_KEYS])
-        self.shell.cell_data["T_C"] = vals[r]
-
-
-def region_profiles(series, row: int, x_nodes) -> dict[str, tuple]:
-    """Through-thickness node temperatures [C] per region at an output row:
-    {region: (x_nodes_m, T_nodes_C)} with nodes from the inner surface outwards."""
-    x_nodes = np.asarray(x_nodes, float)
-    out = {}
-    for key, col in REGION_COLUMNS.items():
-        cols = [f"{col}_T{i + 1}_C" for i in range(len(x_nodes))]
-        if all(c in series for c in cols):
-            out[key] = (x_nodes, series[cols].iloc[row].to_numpy(float))
-    return out
-
-
-def region_temperatures(series, row: int, which: str = "mean") -> dict[str, float]:
-    """Region temperatures [C] at an output row of a model time series.
-
-    which: "mean" (through-wall), "out" (outer surface) or "in" (inner surface).
-    """
-    out = {}
-    for key, col in REGION_COLUMNS.items():
-        name = f"{col}_T_{which}_C"
-        if name in series:
-            out[key] = float(series[name].iloc[row])
-    return out
-
 
 class FieldGeometry3D:
     """The 3-D wall solver's own mesh (``wall.fem_3d.VesselShellMesh``) for display: node

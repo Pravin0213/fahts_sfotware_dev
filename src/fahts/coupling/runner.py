@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from fahts.coupling.vessel_case import VesselCase
-from fahts.coupling.vessel_fire_1d import VesselFireModel
+from fahts.coupling.vessel_fire_model import VesselFireModel
 from fahts.rupture import evaluate
 
 

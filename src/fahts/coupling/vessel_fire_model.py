@@ -1,4 +1,4 @@
-"""Vessel in fire: two-zone non-equilibrium contents coupled to 1-D wall columns.
+"""Vessel in fire: two-zone non-equilibrium contents coupled to a 3-D steel wall.
 
 Formulation (published blowdown practice: Haque et al. 1992; Mahgerefteh & Wong 1999;
 Speranza & Terenzi 2005):
@@ -14,17 +14,17 @@ zones exchange heat and mass only through the interface and phase transfer:
   - interface evaporation/condensation from the interface energy balance
     Q_li = Q_ig + mdot * h_fg   (liquid side convection, gas side convection)
 
-Wall: two radial 1-D columns (``fahts.wall.column_1d``), "dry" (in contact with the gas)
-and "wet" (in contact with the liquid), weighted by the wetted perimeter fraction. Outer
-surface: fire (``fahts.fire``) or ambient. Relief: blowdown valve + line and PSV
-(``fahts.relief``).
+Wall: the shell as a Hex8 solid (``fahts.wall.fem_3d``, coupled by ``Wall3DCoupling``): heat
+conducts through the thickness, around the circumference and along the length; the inner
+surface is wetted below the liquid level. Outer surface: fire (``fahts.fire``; background and
+local peak / jet zone) or ambient. Relief: blowdown valve + line and PSV (``fahts.relief``).
 
 Per time step dt (``VesselFireModel.step``; rates explicit from the start-of-step state,
 wall implicit):
   1. saturation properties of the liquid pool (refreshed every ``sat_every`` s)
   2. valve flows from the gas zone (valves at the top)
-  3. dry wall -> gas (natural convection + internal radiation), wall column step
-  4. wet wall -> liquid (free convection / nucleate / film boiling, linearised), step
+  3-4. wall step (``Wall3DCoupling.step``): fire -> shell -> gas (natural convection +
+     internal radiation) and liquid (free convection / nucleate / film boiling)
   5. interface exchange
   6. zone enthalpy updates: H_z* = H_z + (Q_z - mdot_out,z h_z) dt (+ interface mass)
   7. pressure: find P with  sum_z N_z v_z(P, h_z(P)) = V,
@@ -32,7 +32,7 @@ wall implicit):
      which makes total energy change = Q - H_out exactly since sum V_z = V)
   8. phase transfer between zones at the new P (volume and energy move with the phase)
   9. merge a vanishing zone (vented / compressed-out gas, boiled-dry liquid)
- 10. level -> wetted fraction -> re-weight dry/wet wall columns (energy conserving)
+ 10. level -> wetted part of the inner wall surface
 
 Known issues (kept for behaviour-preserving port): docs/process_model_known_issues.md.
 """
@@ -48,27 +48,19 @@ import pandas as pd
 
 from fahts.coupling.options import VesselFireOptions
 from fahts.coupling.wall3d_coupling import Wall3DCoupling
-from fahts.coupling.wall_regions import PeakZone, region_fractions
+from fahts.coupling.wall_regions import PeakZone
 from fahts.fire import AmbientAuto, FireBC, GuidelineFire
 from fahts.materials import SteelTable
 from fahts.process.fluid_properties import film_gas, phase_dict, sat_props
 from fahts.process.geometry import VesselGeometry
-from fahts.process.inner_ht.boiling_curve import (
-    boiling_flux_and_derivative,
-    linearised_bc,
-    with_derivative,
-)
 from fahts.process.inner_ht.interface import interface_exchange
-from fahts.process.inner_ht.internal_radiation import rad_network
-from fahts.process.inner_ht.natural_convection import H_CORRELATIONS, h_free
-from fahts.process.inner_ht.nucleate_only import nucleate_only_flux
+from fahts.process.inner_ht.natural_convection import h_free
 from fahts.process.zones import Zone, fast_PH_multi, fast_PH_single, split_phases
 from fahts.relief import blowdown
 from fahts.relief.ideal_gas import mdot_orifice_line, orifice_G
 from fahts.relief.psv import PSVOpening
 from fahts.rupture import membrane_stresses
 from fahts.thermo import FlashResult, PRMixture
-from fahts.wall.column_1d import WallColumn, radial_nodes
 
 log = logging.getLogger(__name__)
 
@@ -188,44 +180,6 @@ class VesselFireModel:
             else Zone("liq", nL, 0.0, r0)
         )
 
-        # ------------------------------------------------------------ wall
-        f_wet = geom.wetted_perimeter_fraction(self._level()) if not self.Lz.empty else 0.0
-        self.x_nodes = (
-            np.asarray(opt.wall_nodes, float)
-            if opt.wall_nodes is not None
-            else radial_nodes(t_w, opt.wall_cells)
-        )
-        if abs(self.x_nodes[-1] - t_w) > 1e-9:
-            log.warning(
-                "wall nodes end at %.4g m but the wall is %.4g m thick", self.x_nodes[-1], t_w
-            )
-        # wall regions: background dry / wet, plus peak-zone dry / wet when the heat load has
-        # a local peak flux different from the background (e.g. a jet fire)
-        self.peak = self._peak_zone()
-        keys = ["dry", "wet"] + (["peak_dry", "peak_wet"] if self.peak else [])
-        self.cols = {
-            k: WallColumn(
-                mat, D / 2, self.x_nodes, self._outer_bc(k.startswith("peak")), s["T_shell"]
-            )
-            for k in keys
-        }
-        if self.peak:
-            fr = region_fractions(f_wet, self.peak)
-            self.frac = {k: fr[k] for k in keys}
-        else:
-            self.frac = {"dry": 1.0 - f_wet, "wet": f_wet}
-        self.T_TAB = np.linspace(50.0, 2000.0, 7801)
-        self.E_TAB = np.concatenate(
-            (
-                [0.0],
-                np.cumsum(
-                    0.5
-                    * (mat.cp_at(self.T_TAB[1:]) + mat.cp_at(self.T_TAB[:-1]))
-                    * np.diff(self.T_TAB)
-                ),
-            )
-        )
-
         # ------------------------------------------------------------ valves
         self.Pb = s["back_pressure"]
         self.bdv = s.get("bdv")
@@ -238,18 +192,14 @@ class VesselFireModel:
         self.out_every = opt.out_every or float(adm.get("output_frequence", 10))
         self.n_steps = int(round(t_end / self.dt))
 
-        # 3-D wall (Hex8 solid shell) instead of the 1-D region columns
-        if opt.wall_model not in ("1d", "3d"):
-            raise ValueError(f"wall_model must be '1d' or '3d', got {opt.wall_model!r}")
-        self.wall3d = Wall3DCoupling(self) if opt.wall_model == "3d" else None
-        if self.wall3d is not None:
-            self.frac = self.wall3d.fractions()
-            self.x_nodes = self.wall3d.x_nodes
-            self.E_wall0 = self.wall3d.energy()
-        else:
-            self.E_wall0 = (
-                sum(c.energy() * self.frac[k] for k, c in self.cols.items() if self.frac[k] > 0) * L
-            )
+        # ------------------------------------------------------------ wall (3-D shell)
+        # wall regions (area fractions, output): background dry / wet, plus peak-zone dry /
+        # wet when the heat load has a local peak flux different from the background (jet)
+        self.peak = self._peak_zone()
+        self.wall3d = Wall3DCoupling(self)
+        self.frac = self.wall3d.fractions()
+        self.x_nodes = self.wall3d.x_nodes
+        self.E_wall0 = self.wall3d.energy()
         self.m_liq0 = self.Lz.mass if not self.Lz.empty else 0.0
         self.m_gas0 = self.G.mass
         self.U0 = (self.G.H - P * self.G.V) + (
@@ -282,8 +232,6 @@ class VesselFireModel:
     def run(self, progress=None, cancel=None) -> tuple[pd.DataFrame, dict]:
         """Run to the end time. ``progress(time_s, t_end_s)`` is called after every output
         row; ``cancel()`` is polled every step and a True result raises SimulationCancelled."""
-        for c in self.cols.values():
-            c.q_net_out, _, c.q_rad_out, c.q_conv_out = c.outer(c.T_outer, 0.0)
         self._record(0.0)
         self.next_out = self.out_every
         n_rows = len(self.rows)
@@ -303,9 +251,8 @@ class VesselFireModel:
             names=self.names,
             x_nodes=self.x_nodes,
         )
-        if self.wall3d is not None:
-            w = self.wall3d
-            meta["wall3d"] = dict(mesh=w.mesh, times=np.array(w.times), T=np.array(w.history))
+        w = self.wall3d
+        meta["wall3d"] = dict(mesh=w.mesh, times=np.array(w.times), T=np.array(w.history))
         return pd.DataFrame(self.rows), meta
 
     def step(self, step: int) -> None:
@@ -320,21 +267,14 @@ class VesselFireModel:
 
         self._refresh_saturation(c)
         self._valve_flows(c)
-        if self.wall3d is not None:
-            self.wall3d.step(c)  # both wall stages on the 3-D shell
-        else:
-            self._dry_wall(c)
-            self._wet_wall(c)
+        self.wall3d.step(c)  # fire -> shell -> gas and liquid
         self._interface(c)
         self._zone_balances(c)
         self._solve_pressure(c, step)
         self._phase_transfer(c)
         self._merge_vanishing_zones()
-        if self.wall3d is not None:
-            self.wall3d.set_level(self._level())  # the wall stays, the liquid moves
-            self.frac = self.wall3d.fractions()
-        else:
-            self._reweight_wall()
+        self.wall3d.set_level(self._level())  # the wall stays, the liquid moves
+        self.frac = self.wall3d.fractions()
         self._check_finite(c)
 
         if time >= self.next_out - 1e-9:
@@ -377,9 +317,6 @@ class VesselFireModel:
     def _level(self) -> float:
         return self.geom.level(self.Lz.V) if not self.Lz.empty else 0.0
 
-    def _e_of_T(self, T):
-        return np.interp(T, self.T_TAB, self.E_TAB)
-
     def _gas_vapour(self):
         G, Lz = self.G, self.Lz
         if G.empty and not Lz.empty:
@@ -388,25 +325,18 @@ class VesselFireModel:
 
     # ================================================================ output
     def _record(self, time: float) -> None:
-        s, mat, cols, frac, info, P = self.s, self.mat, self.cols, self.frac, self.info, self.P
-        G, Lz = self.G, self.Lz
-        if self.wall3d is not None:
-            profiles = self.wall3d.region_profiles()
-            Tm = self.wall3d.through_wall_mean(profiles["hot"][0])  # local hot spot
-            self.wall3d.store(time)
-        else:
-            hot = max(cols, key=lambda k: cols[k].T_mean() if frac[k] > 0 else -1)
-            Tm = cols[hot].T_mean()
+        s, mat, frac, info, P = self.s, self.mat, self.frac, self.info, self.P
+        G, Lz, w = self.G, self.Lz, self.wall3d
+        profiles = w.region_profiles()
+        Tm = w.through_wall_mean(profiles["hot"][0])  # local hot spot drives the rupture check
+        w.store(time)
         f = mat.f_uts_at(Tm) if s.get("stress_type", "U") == "U" else mat.f_yield_at(Tm)
         allow = s["strength_mpa"] * s.get("stress_factor", 1.0) * f
         s_h, s_l, vm, tr = membrane_stresses(P, self.D, self.t_w, s.get("ext_long_mpa", 0.0))
         for crit, val in (("vonMises", vm), ("Tresca", tr)):
             if self.rupture[crit] is None and val >= allow:
                 self.rupture[crit] = time
-        if self.wall3d is not None:
-            E_wall = self.wall3d.energy()
-        else:
-            E_wall = sum(c.energy() * frac[k] for k, c in cols.items() if frac[k] > 0) * self.L
+        E_wall = w.energy()
         U = (G.H - P * G.V) + ((Lz.H - P * Lz.V) if not Lz.empty else 0.0)
         bal = (E_wall - self.E_wall0) + (U - self.U0) + self.H_out + self.Q_sink - self.Q_fire
         gv = self._gas_vapour()
@@ -447,24 +377,12 @@ class VesselFireModel:
         )
         if self.peak:
             r["f_peak_wet"] = frac["peak_wet"]
-        if self.wall3d is not None:
-            for key, (prof, _share, q_out) in profiles.items():
-                r[f"{key}_T_out_C"] = prof[-1] - 273.15
-                r[f"{key}_T_in_C"] = prof[0] - 273.15
-                r[f"{key}_T_mean_C"] = self.wall3d.through_wall_mean(prof) - 273.15
-                r[f"{key}_q_net_kW"] = q_out / 1e3
-                for i, Ti in enumerate(prof):
-                    r[f"{key}_T{i+1}_C"] = Ti - 273.15
-            self.rows.append(r)
-            return
-        names = {"dry": "background", "wet": "wet", "peak_dry": "peak", "peak_wet": "peak_wet"}
-        for k, c in cols.items():
-            key = names[k]
-            r[f"{key}_T_out_C"] = c.T_outer - 273.15
-            r[f"{key}_T_in_C"] = c.T_inner - 273.15
-            r[f"{key}_T_mean_C"] = c.T_mean() - 273.15
-            r[f"{key}_q_net_kW"] = c.q_net_out / 1e3
-            for i, Ti in enumerate(c.T):
+        for key, (prof, _share, q_out) in profiles.items():
+            r[f"{key}_T_out_C"] = prof[-1] - 273.15
+            r[f"{key}_T_in_C"] = prof[0] - 273.15
+            r[f"{key}_T_mean_C"] = w.through_wall_mean(prof) - 273.15
+            r[f"{key}_q_net_kW"] = q_out / 1e3
+            for i, Ti in enumerate(prof):
                 r[f"{key}_T{i+1}_C"] = Ti - 273.15
         self.rows.append(r)
 
@@ -548,199 +466,6 @@ class VesselFireModel:
             )
         c.mdot = md_bdv + md_psv
         self.info["md_bdv"], self.info["md_psv"] = md_bdv, md_psv
-
-    # ================================================================ 3. dry wall -> gas
-    def _dry_wall(self, c: StepContext) -> None:
-        opt, m, G, Lz, P, frac, info = (
-            self.opt,
-            self.m,
-            self.G,
-            self.Lz,
-            self.P,
-            self.frac,
-            self.info,
-        )
-        D, dt = self.D, self.dt
-        cols = self.cols
-        dry_keys = [k for k in ("dry", "peak_dry") if k in cols]
-        T_fl = G.T if c.src_is_gas else Lz.T
-        Q_wg = Q_rad_l = Q_rad_g = 0.0
-        A1 = self.A_in * sum(frac[k] for k in dry_keys)  # all dry wall (radiation enclosure)
-        rad_on = opt.rad_internal and A1 > 0 and c.src_is_gas
-        if rad_on:
-            A3 = self.geom.interface_area(self.geom.level(Lz.V)) if not Lz.empty else 0.0
-            T3 = Lz.T if not Lz.empty else G.T
-        for k in dry_keys:
-            cd = cols[k]
-            pg = film_gas(m, c.yG, 0.5 * (cd.T_inner + G.T), P)
-            dTg = abs(cd.T_inner - G.T)
-            if dTg > 1e-3:
-                Pr = pg["cp"] * pg["mu"] / pg["k"]
-                Ra = (
-                    G_ACC
-                    * abs(pg["beta"])
-                    * dTg
-                    * D**3
-                    * pg["rho"] ** 2
-                    * pg["cp"]
-                    / (pg["mu"] * pg["k"])
-                )
-                h_dry = H_CORRELATIONS[opt.h_corr](Ra, Pr) * pg["k"] / D
-            else:
-                h_dry = 0.0
-            if rad_on and frac[k] > 0:
-                # radiosity network of the whole dry wall at this region's temperature; the
-                # region takes its area share w of the exchange
-                A_col = self.A_in * frac[k]
-                w = A_col / A1
-                T1 = cd.T_inner
-                Q1, Q3, Qg = rad_network(
-                    T1, T3, G.T, A1, A3, opt.eps_wall_in, opt.eps_liq, opt.eps_gas
-                )
-                Q1b = rad_network(
-                    T1 + 0.05, T3, G.T, A1, A3, opt.eps_wall_in, opt.eps_liq, opt.eps_gas
-                )[0]
-                h_r = max((Q1b - Q1) / 0.05 / A1, 1e-6)  # W/m2K, radiative conductance
-                T_ref_r = T1 - (Q1 / A1) / h_r
-                h_tot = h_dry + h_r
-                T_eff = (h_dry * T_fl + h_r * T_ref_r) / h_tot
-                cd.step(dt, c.t_mid, T_eff, h_tot)
-                Q1k, Q3k = Q1 * w, Q3 * w
-                Q1_new = h_r * (cd.T_inner - T_ref_r) * A_col  # radiation actually leaving
-                # the liquid surface receives its network share (scaled to the implicit wall
-                # value); the gas absorbs the remainder, so energy is conserved exactly
-                scale = Q1_new / Q1k if abs(Q1k) > 1.0 else 1.0
-                q_rl = -Q3k * scale
-                q_rg = Q1_new - q_rl
-                Q_wg += h_dry * (cd.T_inner - T_fl) * A_col + q_rg
-                Q_rad_l += q_rl
-                Q_rad_g += q_rg
-                if k == "dry":
-                    info["h_rad"] = h_r
-            else:
-                q = cd.step(dt, c.t_mid, T_fl, h_dry)
-                if frac[k] > 0:  # an empty region carries no heat (and may not poison sums)
-                    Q_wg += q * self.A_in * frac[k]
-            if frac[k] > 0:
-                self.Q_fire += cd.q_net_out * self.A_out * frac[k] * dt
-            if k == "dry":
-                self.sat["pg"] = pg
-                info["h_dry"] = h_dry
-                c.h_dry = h_dry
-        info["Q_rad_l"], info["Q_rad_g"] = Q_rad_l, Q_rad_g
-        c.Q_wg, c.Q_rad_l = Q_wg, Q_rad_l
-
-    # ================================================================ 4. wet wall -> liquid
-    def _wet_wall(self, c: StepContext) -> None:
-        opt, m, G, Lz, P, frac, info, sat = (
-            self.opt,
-            self.m,
-            self.G,
-            self.Lz,
-            self.P,
-            self.frac,
-            self.info,
-            self.sat,
-        )
-        geom, dt, t_mid = self.geom, self.dt, c.t_mid
-        Q_wl = 0.0
-        sd = c.sd
-        if (
-            c.liq_present
-            and sd is None
-            and opt.wet_above_crit == "boiling"
-            and sat.get("last") is not None
-            and not (m.iw is not None and (Lz.n / Lz.N)[m.iw] > 0.99)
-        ):
-            # VessFire-like: boiling-level heat transfer continues with the pool taken to be
-            # at saturation, using the last valid saturation property set
-            sd = dict(sat["last"], T_sat=Lz.T, P=P)
-        for k in [k for k in ("wet", "peak_wet") if k in self.cols]:
-            cw = self.cols[k]
-            # h_wet / regime reported for the background wet wall (the peak one if that has
-            # no area)
-            report = k == "wet" or frac.get("wet", 0.0) <= 0
-            if c.liq_present and frac[k] > 0 and sd is None:
-                # single-phase natural convection to a dense (compressed / supercritical) pool
-                Lph = Lz.r.liquid or Lz.r.aqueous or Lz.r.phases[0]
-                # film-temperature properties (as on the gas side): for a dense / near-critical
-                # pool the properties change strongly between bulk and wall temperature
-                T_film = 0.5 * (cw.T_inner + Lz.T)
-                try:
-                    pl = (
-                        phase_dict(m, m.phase_props(Lph.x, T_film, P, "L"))
-                        if Lph.name != "aqueous"
-                        else phase_dict(m, Lph)
-                    )
-                except Exception:  # noqa: BLE001
-                    pl = phase_dict(m, Lph)
-                Lnc = geom.liquid_char_length(geom.level(Lz.V))
-                dTl = abs(cw.T_inner - Lz.T)
-                if dTl > 1e-3:
-                    Pr_l = pl["cp"] * pl["mu"] / pl["k"]
-                    if opt.liq_grashof == "drho" and Lph.name != "aqueous":
-                        # density-difference buoyancy for large property variation across the
-                        # film (supercritical / near-critical fluids; Jackson & Hall 1979):
-                        # Ra = g (rho_b - rho_w) L^3 rho_f cp_f / (mu_f k_f)
-                        try:
-                            rho_w = m.phase_props(Lph.x, cw.T_inner, P, "L").rho
-                        except Exception:  # noqa: BLE001
-                            rho_w = Lph.rho
-                        drho = abs(Lph.rho - rho_w)
-                        cp_use = pl["cp"]
-                        if opt.wet_above_crit == "supercritical":
-                            # integrated (bulk-to-wall) mean cp captures the pseudo-critical peak
-                            try:
-                                hw = m.phase_props(Lph.x, cw.T_inner, P, "L").h_mass
-                                cp_bar = (hw - Lph.h_mass) / (cw.T_inner - Lz.T)
-                                if np.isfinite(cp_bar) and cp_bar > 0:
-                                    cp_use = cp_bar
-                            except Exception:  # noqa: BLE001
-                                pass
-                            Pr_l = cp_use * pl["mu"] / pl["k"]
-                        Ra_l = G_ACC * drho * Lnc**3 * pl["rho"] * cp_use / (pl["mu"] * pl["k"])
-                    else:
-                        Ra_l = (
-                            G_ACC
-                            * abs(pl["beta"])
-                            * dTl
-                            * Lnc**3
-                            * pl["rho"] ** 2
-                            * pl["cp"]
-                            / (pl["mu"] * pl["k"])
-                        )
-                    h_w = H_CORRELATIONS[opt.h_corr_liq or opt.h_corr](Ra_l, Pr_l) * pl["k"] / Lnc
-                else:
-                    h_w = 0.0
-                cw.step(dt, t_mid, Lz.T, h_w)
-                Q_wl += h_w * (cw.T_inner - Lz.T) * self.A_in * frac[k]
-                if report:
-                    info["h_wet"], info["regime"] = h_w, "single-phase"
-            elif c.liq_present and frac[k] > 0 and sd is not None:
-                Lph = Lz.r.liquid or Lz.r.aqueous or Lz.r.phases[0]
-                pl = phase_dict(m, Lph)
-                h_l = geom.level(Lz.V)
-                Lnc = geom.liquid_char_length(h_l)
-                try:
-                    if opt.wet_boiling == "nucleate_only":
-                        q0, dq = with_derivative(
-                            lambda Tw: nucleate_only_flux(Tw, Lz.T, sd, pl, Lnc), cw.T_inner
-                        )
-                        reg = "nucleate_only"
-                    else:
-                        q0, dq, reg = boiling_flux_and_derivative(cw.T_inner, Lz.T, sd, pl, Lnc)
-                except Exception:  # noqa: BLE001
-                    q0, dq, reg = 0.0, 1.0, "fail"
-                h_eff, T_ref = linearised_bc(q0, dq, cw.T_inner)
-                cw.step(dt, t_mid, T_ref, h_eff)
-                Q_wl += h_eff * (cw.T_inner - T_ref) * self.A_in * frac[k]
-                if report:
-                    info["h_wet"], info["regime"] = h_eff, reg
-            else:
-                cw.step(dt, t_mid, G.T, c.h_dry)  # keeps the (zero-area) column alive
-            if frac[k] > 0:
-                self.Q_fire += cw.q_net_out * self.A_out * frac[k] * dt
-        c.sd, c.Q_wl = sd, Q_wl
 
     # ================================================================ 5. interface
     def _interface(self, c: StepContext) -> None:
@@ -1020,40 +745,16 @@ class VesselFireModel:
             self.last_split["L"], self.sticky["L"] = None, False
         self.G, self.Lz = G, Lz
 
-    # ================================================================ 10. wall areas
-    def _reweight_wall(self) -> None:
-        """Wall areas follow the level (energy-conserving re-weighting)."""
-        frac, cols = self.frac, self.cols
-        f_new = self.geom.wetted_perimeter_fraction(self._level()) if not self.Lz.empty else 0.0
-        target = region_fractions(f_new, self.peak) if self.peak else {"wet": f_new}
-        pairs = [("dry", "wet")] + ([("peak_dry", "peak_wet")] if self.peak else [])
-        for dry_k, wet_k in pairs:
-            df = target[wet_k] - frac[wet_k]
-            if abs(df) > 1e-9:
-                src, dst = (dry_k, wet_k) if df > 0 else (wet_k, dry_k)
-                a = abs(df)
-                if frac[dst] + a > 0:
-                    # energy-conserving mixing node by node: e(T) = integral of cp dT
-                    e_dst = self._e_of_T(cols[dst].T) if frac[dst] > 0 else 0.0
-                    e_mix = (e_dst * frac[dst] + self._e_of_T(cols[src].T) * a) / (frac[dst] + a)
-                    cols[dst].T = np.interp(e_mix, self.E_TAB, self.T_TAB)
-                frac[dst] += a
-                frac[src] = max(frac[src] - a, 0.0)
-
     def _check_finite(self, c: StepContext) -> None:
         """Stop at the first non-finite state with diagnostics."""
-        cols, G, P, info = self.cols, self.G, self.P, self.info
-        wall_ok = (
-            np.all(np.isfinite(self.wall3d.solver.T))
-            if self.wall3d is not None
-            else all(np.all(np.isfinite(col.T)) for k, col in cols.items() if self.frac[k] > 0)
-        )
-        if not (wall_ok and np.isfinite(G.T) and np.isfinite(P) and np.isfinite(G.H)):
+        G, P, info = self.G, self.P, self.info
+        T_wall = self.wall3d.solver.T
+        if not (np.all(np.isfinite(T_wall)) and np.isfinite(G.T) and np.isfinite(P) and np.isfinite(G.H)):
             raise FloatingPointError(
                 f"non-finite state at t={c.time}: P={P}, G.T={G.T}, G.H={G.H}, G phases="
                 f"{G.r.phase_names}, L phases={self.Lz.r.phase_names}, h_dry={info['h_dry']}, "
-                f"Q_wg={info['Q_wg']}, dryT={cols['dry'].T[[0, -1]]}, "
-                f"wetT={cols['wet'].T[[0, -1]]}, frac={self.frac}, yG={np.round(c.yG, 4)}"
+                f"Q_wg={info['Q_wg']}, wall T {np.nanmin(T_wall):.1f}..{np.nanmax(T_wall):.1f} K, "
+                f"frac={self.frac}, yG={np.round(c.yG, 4)}"
             )
 
 

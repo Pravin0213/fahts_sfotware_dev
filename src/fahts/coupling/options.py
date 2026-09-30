@@ -63,14 +63,11 @@ class VesselFireOptions:
     use_line: bool = True  # friction in the blowdown line
     valve_model: str = "b1"  # "b1": relief.blowdown (API 520 orifice + Borda-Carnot
     # expansion + real-gas PR Fanno line); "simple": relief.ideal_gas
-    wall_cells: int = 10  # radial cells through the steel wall (wall_column.radial_nodes)
-    wall_model: str = "1d"  # "1d": radial column per wall region (validated vs VessFire);
-    # "3d": Hex8 solid shell - conduction through, around and along the wall
+    # steel wall: Hex8 solid shell (conduction through, around and along the wall).
+    # Mesh convergence: validation/vessfire/reports/wall3d_mesh.md
     wall3d_n_theta: int = 72  # 3-D wall: divisions around the circumference
     wall3d_n_length: int = 40  # 3-D wall: divisions along the shell
     wall3d_n_radial: int = 6  # 3-D wall: layers through the thickness
     wall3d_curve_points: int = 16  # 3-D wall: samples of each heat-transfer curve per step
-    peak_zone: bool = True  # model the heat load's local peak zone (jet fire) as separate wall
-    # regions; False = background flux everywhere (vfpy vessel2 behaviour)
-    wall_nodes: tuple[float, ...] | None = None  # explicit node positions [m] from the inner
-    # surface; overrides wall_cells (e.g. to reproduce another code's grid)
+    peak_zone: bool = True  # model the heat load's local peak zone (jet fire) on the shell;
+    # False = background flux everywhere (vfpy vessel2 behaviour)

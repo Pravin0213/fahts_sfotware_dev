@@ -53,6 +53,15 @@ def test_schema_guard():
         VesselCase.from_dict({"schema": "other"})
 
 
+def test_options_of_the_removed_1d_wall_are_ignored(caplog):
+    d = VesselCase(name="old").to_dict()
+    d["options"] = {"wall_model": "1d", "wall_cells": 20, "h_corr": "churchill_chu"}
+    case = VesselCase.from_dict(d)
+    assert case.options == {"h_corr": "churchill_chu"}
+    assert "removed 1-D wall" in caplog.text
+    case.model_options()                                     # constructs without error
+
+
 def test_en1993_material_and_csv(tmp_path):
     m = en1993_carbon_steel()
     at = lambda f, T: float(f(T + 273.15))  # noqa: E731

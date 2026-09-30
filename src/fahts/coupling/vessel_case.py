@@ -16,6 +16,7 @@ Conventions
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -29,6 +30,10 @@ from fahts.thermo.constants import ALIASES
 
 SCHEMA = "fahts.vessel_case"
 SCHEMA_VERSION = 1
+# options of the removed 1-D wall model: ignored (with a warning) in older case files
+REMOVED_OPTIONS = ("wall_model", "wall_cells", "wall_nodes")
+
+log = logging.getLogger(__name__)
 P_ATM_BAR = 1.01325
 
 PSV_TYPES = ("trapezoidal", "triangular", "square")  # model type index 0 / 1 / 2
@@ -331,7 +336,7 @@ class VesselCase:
             psv=PSVSpec(**d["psv"]),
             stress=StressSpec(**d["stress"]),
             run=RunSpec(**d["run"]),
-            options=dict(d.get("options", {})),
+            options=_current_options(d.get("options", {})),
         )
 
     def save(self, path: Path | str) -> None:
@@ -346,3 +351,10 @@ class VesselCase:
     def volume_m3(self) -> float:
         """Shell volume (flat heads, as in the model)."""
         return math.pi / 4 * self.vessel.inner_diameter_m**2 * self.vessel.length_m
+
+
+def _current_options(options: dict) -> dict:
+    old = [k for k in options if k in REMOVED_OPTIONS]
+    if old:
+        log.warning("ignoring options of the removed 1-D wall model: %s", ", ".join(old))
+    return {k: v for k, v in options.items() if k not in REMOVED_OPTIONS}

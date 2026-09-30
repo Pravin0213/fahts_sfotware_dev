@@ -49,7 +49,7 @@ vessfire_heatsolver/
 │   ├── materials/         ✅ SteelTable (k, cp, strength factors vs T), EN 1993-1-2 E(T), strain
 │   ├── thermo/            ✅ PR EOS + flashes, free water, pseudo-components, transport
 │   ├── fire/              ✅ fire + ambient exposure BCs (structural fire zones still in core/heat)
-│   ├── wall/column_1d/    ✅ radial 1-D wall column
+│   ├── wall/fem_3d/       ✅ vessel shell as a Hex8 solid (the only wall model)
 │   ├── process/           ✅ geometry, zones, fluid property dicts, inner_ht/ (wall→fluid, interface)
 │   ├── relief/            ✅ blowdown (real-gas nozzle + Fanno line), ideal-gas fallback, PSV
 │   ├── rupture/           ✅ stress solutions, axisymmetric FE, failure times
@@ -74,8 +74,8 @@ vessfire_heatsolver/
 
 **Layering rule (target):** `common → materials/thermo → fire/wall/process/relief/rupture
 → coupling → cli/gui`. Physics packages never import each other; only `coupling/` combines
-them. Wall ↔ process talk through one small interface (inner-wall T per region ↔ h, T_fluid
-per region) so `wall/column_1d` and the 3-D FEM wall are interchangeable.
+them. Wall ↔ process talk through `coupling/wall3d_coupling.py` (heat-transfer curves of the
+inner-wall temperature ↔ heat to the gas and liquid zones). The 1-D wall was removed.
 
 **Licence / IP:** everything derived from VessFire (reference results, runner, comparisons)
 stays in `validation/`, `tools/`, `data/` — never in `src/`. Client project data and

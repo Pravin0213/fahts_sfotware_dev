@@ -11,8 +11,15 @@
   },
   "out_every_s": 10.0,
   "profiles": {
-    "vf": {},
+    "vf": {
+      "wall3d_n_theta": 36,
+      "wall3d_n_length": 20,
+      "wall3d_n_radial": 4
+    },
     "physics": {
+      "wall3d_n_theta": 36,
+      "wall3d_n_length": 20,
+      "wall3d_n_radial": 4,
       "wet_above_crit": "single-phase",
       "wet_boiling": "full",
       "water_mode": "physical",
@@ -40,112 +47,112 @@
     "M03-0003__vf__600s": {
       "run": "M03-0003__vf__600s",
       "rows": 61,
-      "seconds": 49.4
+      "seconds": 46.6
     },
     "M04-0003__vf__600s": {
       "run": "M04-0003__vf__600s",
       "rows": 61,
-      "seconds": 52.4
+      "seconds": 51.9
     },
     "M05-0003__vf__600s": {
       "run": "M05-0003__vf__600s",
       "rows": 61,
-      "seconds": 95.2
+      "seconds": 112.5
     },
     "M06-0003__vf__900s": {
       "run": "M06-0003__vf__900s",
       "rows": 91,
-      "seconds": 78.7
+      "seconds": 80.6
     },
     "M07-0004__vf__900s": {
       "run": "M07-0004__vf__900s",
       "rows": 91,
-      "seconds": 75.7
+      "seconds": 76.1
     },
     "M08-0001__vf__900s": {
       "run": "M08-0001__vf__900s",
       "rows": 91,
-      "seconds": 70.8
+      "seconds": 78.7
     },
     "M09-0001__vf__900s": {
       "run": "M09-0001__vf__900s",
       "rows": 91,
-      "seconds": 79.1
+      "seconds": 79.4
     },
     "M10-0001__vf__900s": {
       "run": "M10-0001__vf__900s",
       "rows": 91,
-      "seconds": 73.5
+      "seconds": 79.2
     },
     "M11-0002__vf__900s": {
       "run": "M11-0002__vf__900s",
       "rows": 91,
-      "seconds": 119.8
+      "seconds": 181.2
     },
     "M12-0004__vf__900s": {
       "run": "M12-0004__vf__900s",
       "rows": 91,
-      "seconds": 97.3
+      "seconds": 136.8
     },
     "M15-0002__vf__900s": {
       "run": "M15-0002__vf__900s",
       "rows": 91,
-      "seconds": 142.1
+      "seconds": 198.6
     },
     "M05-0003__physics__600s": {
       "run": "M05-0003__physics__600s",
       "rows": 61,
-      "seconds": 91.0
+      "seconds": 108.0
     },
     "M11-0002__physics__900s": {
       "run": "M11-0002__physics__900s",
       "rows": 91,
-      "seconds": 132.0
+      "seconds": 183.7
     },
     "M12-0004__physics__900s": {
       "run": "M12-0004__physics__900s",
       "rows": 91,
-      "seconds": 94.6
+      "seconds": 131.2
     },
     "M15-0002__physics__900s": {
       "run": "M15-0002__physics__900s",
       "rows": 91,
-      "seconds": 144.7
+      "seconds": 195.5
     },
     "M06-0003__vf__3600s": {
       "run": "M06-0003__vf__3600s",
       "rows": 361,
-      "seconds": 155.4
+      "seconds": 235.9
     },
     "M10-0001__vf__3600s": {
       "run": "M10-0001__vf__3600s",
       "rows": 361,
-      "seconds": 155.6
+      "seconds": 238.4
     },
     "M11-0002__vf__3600s": {
       "run": "M11-0002__vf__3600s",
       "rows": 361,
-      "seconds": 183.9
+      "seconds": 339.6
     },
     "M06-0030__vf__1200s": {
       "run": "M06-0030__vf__1200s",
       "rows": 121,
-      "seconds": 18.6
+      "seconds": 108.9
     },
     "M06-0069__vf__1200s": {
       "run": "M06-0069__vf__1200s",
       "rows": 121,
-      "seconds": 41.4
+      "seconds": 203.3
     },
     "M06-0070__vf__1200s": {
       "run": "M06-0070__vf__1200s",
       "rows": 121,
-      "seconds": 40.2
+      "seconds": 173.7
     },
     "M14-0095__vf__1200s": {
       "run": "M14-0095__vf__1200s",
       "rows": 121,
-      "seconds": 19.7
+      "seconds": 128.2
     }
   },
   "history": [
@@ -163,7 +170,12 @@
       "date": "2026-09-30",
       "base_commit": "ee7563c+changes",
       "reason": "Known issue #10: local (jet) peak fire zone modelled as separate wall regions; new golden cases M06-0030, M06-0069, M06-0070, M14-0095 (existing goldens unchanged)"
+    },
+    {
+      "date": "2026-09-30",
+      "base_commit": "6979a6c+changes",
+      "reason": "1-D wall removed: the vessel wall is the 3-D Hex8 shell (coarse mesh 36x20x4 in the golden profiles); results change by design, see validation/vessfire/reports/wall3d.md"
     }
   ],
-  "base_commit": "ee7563c+changes"
+  "base_commit": "6979a6c+changes"
 }

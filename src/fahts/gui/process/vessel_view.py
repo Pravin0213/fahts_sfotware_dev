@@ -14,10 +14,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QSlider, QVBoxLayout,
                              QWidget)
 
-from fahts.coupling.report import regions_with_area
-from fahts.renderer.vessel_geometry import (CUTAWAYS, REGION_COLUMNS, REGION_KEYS,
-                                            FieldGeometry3D, VesselGeometry3D,
-                                            region_profiles, region_temperatures)
+from fahts.renderer.vessel_geometry import CUTAWAYS, FieldGeometry3D, VesselGeometry3D
 
 REGION_COLOURS = ["#b8b8b8", "#5b8fd6", "#ff9a3c", "#d9412b"]  # dry, wet, peak dry, peak wet
 REGION_LABELS = ["dry wall", "wetted wall", "jet zone (dry)", "jet zone (wetted)"]
@@ -31,7 +28,7 @@ class VesselView(QWidget):
         super().__init__(parent)
         self.plotter = None
         self._geom: VesselGeometry3D | None = None
-        self._field: FieldGeometry3D | None = None  # 3-D wall results: the solver's own field
+        self._field: FieldGeometry3D | None = None  # results: the wall solver's own field
         self._case = None
         self._result = None
         self._row = 0
@@ -162,46 +159,17 @@ class VesselView(QWidget):
 
     # ------------------------------------------------------------------ drawing
     def _make_field(self) -> None:
-        w = self._result.meta.get("wall3d") if self._result is not None else None
+        w = self._result.meta["wall3d"] if self._result is not None else None
         self._field = FieldGeometry3D(w["mesh"], self.thickness_scale) if w else None
 
     def _temperature_range(self, through_thickness: bool) -> tuple[float, float]:
-        """Colour range over the whole run (regions with area only), so frames compare."""
-        if self._field is not None:                     # the 3-D field itself
-            T = self._result.meta["wall3d"]["T"]
-            if not through_thickness:
-                m = self._field.mesh
-                w = m.r / m.r.sum()
-                T = T.reshape(len(T), -1, m.nr) @ w
-            return float(T.min()) - 273.15, max(float(T.max()) - 273.15, float(T.min()) - 272.15)
-        ts = self._result.series
-        keep = set(regions_with_area(self._result))
-        n = len(self._result.meta.get("x_nodes", []))
-        vals = []
-        for key in REGION_KEYS:
-            col = REGION_COLUMNS[key]
-            if col not in keep:
-                continue
-            names = ([f"{col}_T{i + 1}_C" for i in range(n)] if through_thickness
-                     else [f"{col}_T_mean_C"])
-            vals += [ts[c].to_numpy() for c in names if c in ts]
-        v = np.concatenate(vals)
-        lo, hi = float(np.nanmin(v)), float(np.nanmax(v))
-        return lo, max(hi, lo + 1.0)
-
-    def _paint(self) -> str | None:
-        """Paint the wall for the current mode; returns the scalar name to show."""
-        g, mode = self._geom, self.mode.currentIndex()
-        if mode == 0 or self._result is None:
-            if g.wall is None:
-                g.paint_wall({})
-            return None
-        ts = self._result.series
-        if mode == 1:
-            g.paint_wall(region_profiles(ts, self._row, self._result.meta["x_nodes"]))
-        else:
-            g.paint_wall(region_temperatures(ts, self._row, "mean"))
-        return "T_C"
+        """Colour range over the whole run, so frames compare."""
+        T = self._result.meta["wall3d"]["T"]
+        if not through_thickness:
+            m = self._field.mesh
+            T = T.reshape(len(T), -1, m.nr) @ (m.r / m.r.sum())
+        lo = float(T.min()) - 273.15
+        return lo, max(float(T.max()) - 273.15, lo + 1.0)
 
     def _redraw(self, reset_camera: bool = False) -> None:
         self._update_legend()
@@ -210,15 +178,14 @@ class VesselView(QWidget):
         p, g, cut = self.plotter, self._geom, self.cutaway_name
         p.clear_actors()
         mode = self.mode.currentIndex()
-        if self._field is not None and mode > 0:
-            # 3-D wall: the solver's temperature field, smooth around / along / through
+        show_T = self._field is not None and mode > 0
+        if show_T:
+            # the wall solver's temperature field, smooth around / along / through the wall
             T = self._result.meta["wall3d"]["T"][self._row]
             surf = self._field.surface(T, cut, through_wall_mean=(mode == 2))
-            scalars = "T_C"
         else:
-            scalars = self._paint()
             surf = g.wall_surface(cut)
-        if scalars:
+        if show_T:
             lo, hi = self._temperature_range(mode == 1)
             p.add_mesh(surf, scalars="T_C", cmap="inferno", clim=(lo, hi), name="wall",
                        scalar_bar_args=dict(title="wall T [°C]", color="white", vertical=True,
@@ -261,9 +228,9 @@ class VesselView(QWidget):
                 f'<span style="color:{c}">■</span> {lbl}'
                 for c, lbl in zip(REGION_COLOURS, REGION_LABELS)) + note)
         elif self.mode.currentIndex() == 1:
-            self.legend.setText("Colours: wall temperature at each depth (model nodes through the "
-                                "thickness): outer surface = fire side, inner = fluid side, cut "
-                                "faces show the gradient. Jet zone outlined in red." + note)
+            self.legend.setText("Colours: wall temperature from the 3-D wall solver: outer "
+                                "surface = fire side, inner = fluid side, cut faces show the "
+                                "gradient through the wall. Jet zone outlined in red." + note)
         else:
-            self.legend.setText("Colours: through-wall mean temperature of each wall region. "
-                                "Jet zone outlined in red." + note)
+            self.legend.setText("Colours: through-wall mean temperature at each point of the "
+                                "wall. Jet zone outlined in red." + note)

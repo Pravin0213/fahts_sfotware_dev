@@ -44,21 +44,22 @@ def test_case_preview_draws_shell_zone_heads_liquid(view):
     assert "liquid" not in _actors(view)
 
 
-def test_result_painting_and_time_slider(view):
-    case, _ = case_from_vessfire_deck(CASES / "M06-0070")
+def test_result_modes_and_time_slider(view):
+    case, _ = case_from_vessfire_deck(CASES / "M06-0070")          # jet on top
     case.run.t_end_s = 120.0
+    case.options = {"wall3d_n_theta": 36, "wall3d_n_length": 12, "wall3d_n_radial": 4}
     res = run_case(case)
     view.show_result(res)
     assert view.slider.isEnabled() and view.slider.maximum() == len(res.series) - 1
-    wall = view._geom.wall
-    ts, last = res.series, len(res.series) - 1
-    T = wall.cell_data["T_C"]                                      # through thickness (default)
-    assert np.nanmax(T) <= ts.peak_T_out_C.iloc[last] + 1e-9       # hottest: jet, outer surface
-    assert np.nanmax(T) > ts.peak_T_mean_C.iloc[last]              # gradient, not the mean
+    hist = res.meta["wall3d"]["T"] - 273.15
+    T = view._field.grid.point_data["T_C"]                         # through thickness (default)
+    assert T.max() == pytest.approx(hist[-1].max())                # hottest: jet, outer surface
     view.mode.setCurrentIndex(2)                                   # through-wall mean
-    assert np.nanmax(wall.cell_data["T_C"]) == pytest.approx(ts.peak_T_mean_C.iloc[last])
+    T_mean = view._field.grid.point_data["T_C"]
+    assert T_mean.max() < T.max()                                  # gradient, not the mean
+    assert T_mean.max() == pytest.approx(res.series.hot_T_mean_C.iloc[-1], abs=0.05)
     view.slider.setValue(0)
-    assert np.nanmax(view._geom.wall.cell_data["T_C"]) == pytest.approx(ts.peak_T_mean_C.iloc[0])
+    assert view._field.grid.point_data["T_C"].max() == pytest.approx(hist[0].max(), abs=0.05)
 
 
 def test_cutaway_and_thickness_scale(view):
@@ -75,7 +76,7 @@ def test_cutaway_and_thickness_scale(view):
 def test_3d_wall_result_shows_the_solver_field(view):
     case, _ = case_from_vessfire_deck(CASES / "M06-0070")
     case.run.t_end_s = 60.0
-    case.options = {"wall_model": "3d", "wall3d_n_theta": 36, "wall3d_n_length": 12,
+    case.options = {"wall3d_n_theta": 36, "wall3d_n_length": 12,
                     "wall3d_n_radial": 4}
     res = run_case(case)
     view.show_result(res)

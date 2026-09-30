@@ -38,7 +38,7 @@ def _rich_case() -> VesselCase:
     c.ambient.convection, c.ambient.h_W_m2K = "fixed", 12.5
     c.stress.basis, c.stress.factor = "yield", 0.85
     c.run.t_end_s, c.run.dt_s = 1800.0, 0.5
-    c.options = {"h_corr": "churchill_chu", "peak_zone": False, "wall_cells": 20}
+    c.options = {"h_corr": "churchill_chu", "peak_zone": False, "wall3d_n_radial": 8}
     return c
 
 
@@ -119,11 +119,9 @@ def test_3d_preview_follows_edits_without_a_display(qapp):
     assert ws.vessel_view._geom.region_fractions()["wet"] == pytest.approx(0.5, abs=0.01)
 
 
-def test_wall_model_option(qapp):
+def test_wall_mesh_options(qapp):
     ws = ProcessWorkspace()
-    w = ws.form(OptionsForm).widgets["wall_model"]
-    w.setCurrentIndex(w.property("choices").index("3d"))
+    assert "wall_model" not in ws.form(OptionsForm).widgets       # 3-D wall only
     ws.form(OptionsForm).widgets["wall3d_n_radial"].setValue(8)
-    opts = ws.current_case().options
-    assert opts == {"wall_model": "3d", "wall3d_n_radial": 8}
-    assert ws.current_case().model_options().wall_model == "3d"
+    assert ws.current_case().options == {"wall3d_n_radial": 8}
+    assert ws.current_case().model_options().wall3d_n_radial == 8

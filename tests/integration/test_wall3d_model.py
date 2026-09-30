@@ -1,4 +1,4 @@
-"""The vessel model with the 3-D wall (wall_model="3d")."""
+"""The vessel model with its 3-D (Hex8 solid) wall."""
 
 from __future__ import annotations
 
@@ -13,19 +13,22 @@ from validation.vessfire.input_deck import read_case
 
 pytest.importorskip("CoolProp")
 CASES = Path(__file__).resolve().parents[1] / "regression" / "process" / "cases"
-COARSE = dict(wall_model="3d", wall3d_n_theta=36, wall3d_n_length=12, wall3d_n_radial=4)
+COARSE = dict(wall3d_n_theta=36, wall3d_n_length=12, wall3d_n_radial=4)
 
 
-def test_uniform_fire_agrees_with_1d_and_conserves_energy(steel):
-    """Uniform fire: no lateral driving force, the 3-D wall must reproduce the 1-D one."""
+def test_uniform_fire_mesh_independent_and_conserves_energy(steel):
+    """Uniform fire: a coarse and a 2x finer wall mesh give the same vessel response
+    (full mesh study: validation/vessfire/reports/wall3d_mesh.md)."""
     case = read_case(CASES / "M06-0003")                  # H2, 150 kW/m2, 60 mm
-    a, _ = simulate(case, VesselFireOptions(t_end=300.0), steel)
+    fine = dict(wall3d_n_theta=72, wall3d_n_length=24, wall3d_n_radial=8)
+    a, _ = simulate(case, VesselFireOptions(t_end=300.0, **fine), steel)
     b, meta = simulate(case, VesselFireOptions(t_end=300.0, **COARSE), steel)
     assert abs(b.energy_err_pct.iloc[-1]) < 0.1                   # secant capacity: exact
     assert b.P_bara.iloc[-1] == pytest.approx(a.P_bara.iloc[-1], rel=5e-3)
     assert b.T_gas_C.iloc[-1] == pytest.approx(a.T_gas_C.iloc[-1], abs=2.0)
     assert b.background_T_mean_C.iloc[-1] == pytest.approx(a.background_T_mean_C.iloc[-1],
                                                            abs=5.0)
+    assert b.background_T_out_C.iloc[-1] > b.background_T_in_C.iloc[-1] + 20.0  # gradient
     w = meta["wall3d"]
     assert w["T"].shape == (len(b), w["mesh"].n_nodes) and len(meta["x_nodes"]) == 5
 

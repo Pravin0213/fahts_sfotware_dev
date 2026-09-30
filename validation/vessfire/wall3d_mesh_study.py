@@ -30,7 +30,7 @@ def _one(args) -> dict:
     case = read_case(CASES / cid / "inputs")
     mat = load_steel_table(case["seg"]["material"], DEFAULT_DB)
     t0 = time.perf_counter()
-    ts, meta = simulate(case, VesselFireOptions(t_end=T_END, wall_model="3d", wall3d_n_theta=nt,
+    ts, meta = simulate(case, VesselFireOptions(t_end=T_END, wall3d_n_theta=nt,
                                                 wall3d_n_length=nl, wall3d_n_radial=nr), mat)
     last = ts.iloc[-1]
     return {"case": f"{cid[:8]} ({what})", "mesh": mesh, "nodes": meta["wall3d"]["mesh"].n_nodes,

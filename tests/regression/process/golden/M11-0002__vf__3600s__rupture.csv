@@ -4,20 +4,20 @@ membrane,local,vonMises,,
 limit,through-wall avg,vonMises,,
 lame,local,vonMises,,
 lame,mean,vonMises,,
-thermal_elastic,local,vonMises,,
-thermal_elastic,mean,vonMises,,
-thermal_tg,local,vonMises,,
-thermal_tg,mean,vonMises,,
-thermal_2x,local,vonMises,,
-thermal_2x,mean,vonMises,,
+thermal_elastic,local,vonMises,2541.5602572892799,in
+thermal_elastic,mean,vonMises,2540.6616753122817,in
+thermal_tg,local,vonMises,2543.5453382317114,in
+thermal_tg,mean,vonMises,2541.7693997729193,in
+thermal_2x,local,vonMises,2548.0093080298816,in
+thermal_2x,mean,vonMises,2544.1569051855899,in
 membrane,mean,Tresca,,
 membrane,local,Tresca,,
 limit,through-wall avg,Tresca,,
 lame,local,Tresca,,
 lame,mean,Tresca,,
-thermal_elastic,local,Tresca,,
-thermal_elastic,mean,Tresca,,
-thermal_tg,local,Tresca,,
-thermal_tg,mean,Tresca,,
-thermal_2x,local,Tresca,,
-thermal_2x,mean,Tresca,,
+thermal_elastic,local,Tresca,2541.4663072358212,in
+thermal_elastic,mean,Tresca,2540.5822586155336,in
+thermal_tg,local,Tresca,2543.4132481730167,in
+thermal_tg,mean,Tresca,2541.6669242323028,in
+thermal_2x,local,Tresca,2547.8400278321883,in
+thermal_2x,mean,Tresca,2544.050563379898,in

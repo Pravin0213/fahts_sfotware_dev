@@ -3,8 +3,8 @@
 The goldens freeze the behaviour of the product code (``fahts.coupling``), so any change in
 results is visible and deliberate. History: until 2026-09-30 they were generated from the
 original vfpy code (``legacy/vfpy/``) to verify the port bit for bit; they were regenerated
-from ``fahts`` when known issue #1 (wall grid) was fixed - see the manifest and
-``docs/process_model_known_issues.md``.
+from ``fahts`` when known issue #1 (wall grid) was fixed, and again when the 1-D wall was
+replaced by the 3-D (Hex8) wall - see the manifest and ``docs/process_model_known_issues.md``.
 
 - ``CASES``     the golden case set (input decks in ``cases/<id>/``)
 - ``PROFILES``  named option sets (VessFire-matching default and physics-preferred)
@@ -74,9 +74,12 @@ CASES: dict[str, str] = {
 
 # Option sets. "vf" = current default (VessFire-matching, MODEL_CHOICES.md N5);
 # "physics" = physics-preferred alternatives, to cover the other code branches.
+# Both on the coarse 3-D wall mesh: every code branch at a fraction of the run time (within
+# ~1 % of the default mesh: validation/vessfire/reports/wall3d_mesh.md).
+WALL_MESH = dict(wall3d_n_theta=36, wall3d_n_length=20, wall3d_n_radial=4)
 PROFILES: dict[str, dict] = {
-    "vf": {},
-    "physics": dict(wet_above_crit="single-phase", wet_boiling="full",
+    "vf": dict(WALL_MESH),
+    "physics": dict(WALL_MESH, wet_above_crit="single-phase", wet_boiling="full",
                     water_mode="physical", psv_liquid="gas"),
 }
 
@@ -126,6 +129,7 @@ def _legacy_modules():
 
 def _run_legacy(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     vessel2, stress = _legacy_modules()
+    opts = {k: v for k, v in opts.items() if k not in WALL_MESH}   # vfpy: 1-D wall only
     opt = vessel2.Options2(t_end=t_end, out_every=OUT_EVERY, **opts)
     ts, _meta = vessel2.simulate2(case, opt)
     _ss, failures = stress.evaluate(ts, case)

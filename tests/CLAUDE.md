@@ -2,7 +2,8 @@
 
 ## Current State
 
-Non-GUI (2026-09-30): **1104 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
+Non-GUI (2026-09-30, after the 1-D wall removal): **1269 passing, 6 pre-existing failures**
+(list in `docs/3d_solver_plan.md`),
 22 golden tests skipped unless `--golden`.
 GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
 Process-vessel GUI widgets: `tests/gui/` run offscreen (no VTK) and are part of the default run;
@@ -12,7 +13,7 @@ Process-vessel GUI widgets: `tests/gui/` run offscreen (no VTK) and are part of 
 cd /home/oslprb/vessfire_heatsolver
 python -m pytest tests/ -q                        # all tests (golden tests skipped)
 python -m pytest tests/test_foo.py                # single file
-python -m pytest tests/regression --golden -q     # process-model goldens (~4 min/impl)
+python -m pytest tests/regression --golden -q     # process-model goldens (3-D wall, ~5 min)
 ```
 
 Run tests before declaring any task done. Both `model_file.fem` and `model_t1.fem`
@@ -49,8 +50,10 @@ must parse cleanly — smoke tests for both exist.
 ## Process-model unit tests (`tests/unit/`)
 
 - `tests/unit/<package>/test_equivalence_legacy.py` — each ported package is bit-identical with
-  `legacy/vfpy` (via `tests/legacy_ref.py`); synthetic steel table fixture in `tests/unit/conftest.py`
-  (no proprietary data needed).
+  `legacy/vfpy` (via `tests/legacy_ref.py`); synthetic steel table fixture in
+  `tests/unit/conftest.py` (no proprietary data needed). The 1-D wall package and its test were
+  removed 2026-09-30; the 3-D wall is checked against an independent 1-D radial finite-volume
+  reference in `tests/unit/wall3d/`.
 - `tests/unit/test_layering.py` — physics packages only import the layers below them.
 
 ## Golden Regression Tests — process model (`tests/regression/process/`)
@@ -65,7 +68,8 @@ is visible and deliberate. **Run `--golden` after any change to the process-mode
   `manifest.json`: library versions, git commit, and a `history` of why goldens changed
 - `harness.py` — `IMPLEMENTATIONS`: `fahts` (checked) and `legacy` (frozen vfpy; diagnostics
   and before/after studies only). History: goldens came from legacy until the port was verified
-  bit for bit (2026-09-30), then were regenerated from `fahts` for the wall-grid fix (issue #1).
+  bit for bit (2026-09-30), then were regenerated from `fahts` for the wall-grid fix (issue #1)
+  and for the switch to the 3-D wall (coarse mesh 36x20x4, `harness.WALL_MESH`).
 - Tolerance: `RTOL = 1e-6` of each column's magnitude. Never loosen it. A deliberate physics
   change regenerates goldens in the same commit:
   `python -m tests.regression.process.generate --reason "<why>"`.

@@ -1,5 +1,5 @@
-"""3-D vessel shell conduction: mesh geometry, energy conservation, radial agreement with the
-1-D wall column, lateral spreading from a hot patch."""
+"""3-D vessel shell conduction: mesh geometry, energy conservation, radial agreement with an
+independent fine 1-D radial finite-volume solution, lateral spreading from a hot patch."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import pytest
 
 from fahts.core.heat.solver.fem_3d import hex8_jacobians
 from fahts.materials import SteelTable
-from fahts.wall.column_1d import WallColumn, radial_nodes
 from fahts.wall.fem_3d import PeakZoneGeometry, ShellConduction3D, VesselShellMesh
 
 
@@ -50,30 +49,47 @@ def test_energy_conservation_uniform_flux():
     assert s.T[m.outer_nodes].mean() > s.T[m.inner_nodes].mean()        # gradient inwards
 
 
-def test_radial_profile_matches_1d_column():
-    """Uniform fire outside, convection inside: the 3-D field is axisymmetric and equals the
-    1-D radial column (same physics, fine grids)."""
+def radial_fv(R_in, t, n, k, rho_cp, T0, q_out, h_in, T_fl, dt, n_steps):
+    """Reference: implicit finite-volume conduction in a cylinder wall (constant properties),
+    n cells, flux q_out on the outer surface, convection h_in to T_fl inside. Returns the
+    cell-centre radii and temperatures."""
+    rf = R_in + np.linspace(0.0, t, n + 1)                 # faces
+    rc = 0.5 * (rf[1:] + rf[:-1])
+    V = 0.5 * (rf[1:] ** 2 - rf[:-1] ** 2)                 # per radian and metre
+    G = k * rf[1:-1] / np.diff(rc)                         # interior face conductances
+    A = np.diag(rho_cp * V / dt)
+    for i, g in enumerate(G):
+        A[i, i] += g
+        A[i + 1, i + 1] += g
+        A[i, i + 1] -= g
+        A[i + 1, i] -= g
+    g_in = 1.0 / (1.0 / (h_in * rf[0]) + (rc[0] - rf[0]) / (k * rf[0]))
+    A[0, 0] += g_in
+    T = np.full(n, T0)
+    for _ in range(n_steps):
+        b = rho_cp * V / dt * T
+        b[0] += g_in * T_fl
+        b[-1] += q_out * rf[-1]
+        T = np.linalg.solve(A, b)
+    return rc, T
+
+
+def test_radial_profile_matches_1d_reference():
+    """Uniform fire outside, convection inside: the 3-D field is axisymmetric and equals a
+    fine 1-D radial finite-volume solution."""
     D, t, h_in, T_fl, q = 2.0, 0.06, 500.0, 300.0, 100e3
     mat = const_steel()
     m = VesselShellMesh(D=D, t=t, L=1.0, n_theta=24, n_length=2, n_radial=24)
     s = ShellConduction3D(m, mat, 300.0)
     A_o, A_i = m.outer_area_background, m.inner_area
 
-    class Flux:
-        T_flame = None
-
-        def __call__(self, T_s, time):
-            return q, 0.0, q, 0.0
-
-    col = WallColumn(mat, D / 2, radial_nodes(t, 48), Flux(), 300.0)
-    for n in range(300):
+    for _ in range(300):
         s.step(1.0, lambda T: (q * A_o, np.zeros_like(T)),
                lambda T: (h_in * A_i * (T - T_fl), h_in * A_i))
-        col.step(1.0, n + 0.5, T_fl, h_in)
+    rc, T_ref = radial_fv(D / 2, t, 200, 45.0, 7850.0 * 500.0, 300.0, q, h_in, T_fl, 1.0, 300)
     prof = m.columns(s.T)
     assert np.ptp(prof, axis=0).max() < 1e-6                            # axisymmetric
-    r3 = m.r - D / 2
-    T1 = np.interp(r3, col.R - D / 2, col.T)
+    T1 = np.interp(m.r, rc, T_ref)                                      # (flat beyond ends)
     assert np.abs(prof[0] - T1).max() < 1.0                             # K, after 300 s
     assert prof[0][-1] - prof[0][0] > 50.0                              # real gradient
 
