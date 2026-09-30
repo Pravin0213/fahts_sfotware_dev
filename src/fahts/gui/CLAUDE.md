@@ -127,7 +127,7 @@ deck folder; also `python -m fahts <case.vcase.json | deck folder>`).
 | `run_worker.py` | `CaseRunWorker` QThread (progress / finished_ok / error / cancelled) |
 | `results_view.py` | summary, plots (pressure, temperatures, inventory, release, stress), failure-time table, CSV / Excel export |
 | `fields.py` | `dspin` → `ExactDoubleSpinBox` (keeps the exact loaded value unless the user edits it) |
-| `vessel_view.py` | `VesselView`: 3-D vessel (tab "3-D view" next to "Results"): wall regions before a run, wall temperature per region with a time slider after it; VTK widget created lazily on first show |
+| `vessel_view.py` | `VesselView`: 3-D vessel (tab "3-D view" next to "Results"): solid steel wall (thickness ×1/3/5/10 for display), cut-away none / quarter / half; wall regions before a run; after it wall temperature through the thickness (model node temperatures at each depth) or through-wall mean, with a time slider; VTK widget created lazily on first show |
 
 Gotchas:
 - A form only touches its own part of the case; `current_case()` applies all forms to a copy.

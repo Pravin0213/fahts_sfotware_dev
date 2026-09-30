@@ -121,6 +121,11 @@ Critical gotchas specific to the renderer layer:
 `VesselGeometry3D(case)`: axis along x, z up, angles from the top (heat-load convention).
 Grid lines include the jet-zone edges so the zone is exact; the 0/360 deg seam is merged
 (`clean()`), otherwise the zone outline shows a false edge where the zone crosses the top.
+`wall_surface(cutaway)` is the solid wall (built on first use: x × theta × radial hexahedra
+in that axis order - (theta, x, r) turns every cell inside out; seam merged); `paint_wall()`
+takes a temperature or a through-thickness profile `(x_nodes, T_nodes)` per region
+(`region_profiles`). `thickness_scale` exaggerates the drawn thickness only; depths are mapped
+back to real metres before interpolating the model's node temperatures.
 `set_level(level)` recomputes region ids; `region_fractions()` equals the model's
 `VesselFireModel.frac` to < 0.3 % (tests/unit/renderer) - keep it that way: the view must show
 what the model computes.

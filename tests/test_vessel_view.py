@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("pyvistaqt")
@@ -38,7 +39,7 @@ def _actors(v):
 def test_case_preview_draws_shell_zone_heads_liquid(view):
     case, _ = case_from_vessfire_deck(CASES / "M06-0070")        # LPG, jet on top
     view.show_case(case)
-    assert {"shell", "zone", "head0", "head1", "liquid"} <= _actors(view)
+    assert {"wall", "zone", "head0", "head1", "liquid"} <= _actors(view)
     view.show_liquid.setChecked(False)
     assert "liquid" not in _actors(view)
 
@@ -49,9 +50,23 @@ def test_result_painting_and_time_slider(view):
     res = run_case(case)
     view.show_result(res)
     assert view.slider.isEnabled() and view.slider.maximum() == len(res.series) - 1
-    shell = view._geom.shell
-    assert "T_C" in shell.cell_data and shell.cell_data["T_C"].max() > 20.0
+    wall = view._geom.wall
+    ts, last = res.series, len(res.series) - 1
+    T = wall.cell_data["T_C"]                                      # through thickness (default)
+    assert np.nanmax(T) <= ts.peak_T_out_C.iloc[last] + 1e-9       # hottest: jet, outer surface
+    assert np.nanmax(T) > ts.peak_T_mean_C.iloc[last]              # gradient, not the mean
+    view.mode.setCurrentIndex(2)                                   # through-wall mean
+    assert np.nanmax(wall.cell_data["T_C"]) == pytest.approx(ts.peak_T_mean_C.iloc[last])
     view.slider.setValue(0)
-    assert shell.cell_data["T_C"].max() == pytest.approx(res.series.background_T_mean_C.iloc[0])
-    view.mode.setCurrentIndex(2)                                  # outer surface
-    assert shell.cell_data["T_C"].max() >= res.series.peak_T_out_C.iloc[0] - 1e-9
+    assert np.nanmax(view._geom.wall.cell_data["T_C"]) == pytest.approx(ts.peak_T_mean_C.iloc[0])
+
+
+def test_cutaway_and_thickness_scale(view):
+    case, _ = case_from_vessfire_deck(CASES / "M06-0070")
+    view.show_case(case)
+    full = view._geom.wall_surface("none").n_cells
+    view.cutaway.setCurrentIndex(2)                                # half
+    assert "head0" not in _actors(view) and "wall" in _actors(view)
+    view.scale.setCurrentIndex(2)                                  # x5
+    assert view._geom.R_out == pytest.approx(view._geom.R + 5 * case.vessel.wall_m)
+    assert "×5" in view.legend.text() and full > 0

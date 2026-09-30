@@ -52,3 +52,39 @@ def test_paint_from_results():
     T, r = g.shell.cell_data["T_C"], g.shell.cell_data["region"]
     assert set(T[r == 2]) == {700.0} and set(T[r == 1]) == {50.0}
     assert not (r == 3).any()                    # jet on top: no wetted peak cells
+
+
+def _jet_case():
+    case, _ = case_from_vessfire_deck(CASES / "M06-0070")          # D 2 m, t 60 mm, jet on top
+    return case
+
+
+@pytest.mark.parametrize("scale", [1.0, 5.0])
+def test_solid_wall_volume_and_cutaways(scale):
+    case = _jet_case()
+    g = VesselGeometry3D(case, thickness_scale=scale)
+    g.set_level(1.0)
+    surf = g.wall_surface()
+    R, t, L = g.R, case.vessel.wall_m * scale, g.L
+    assert g.wall.volume == pytest.approx(np.pi * ((R + t) ** 2 - R ** 2) * L, rel=2e-3)
+    n = g.wall.n_cells
+    half = g.wall.extract_cells(np.flatnonzero(~((g._w_theta > 0) & (g._w_theta < 180))))
+    assert half.n_cells == pytest.approx(n / 2, rel=0.02)
+    assert g.wall_surface("quarter").n_cells > 0 and surf.n_cells > 0
+    assert {0, 1, 2} <= set(np.unique(surf.cell_data["region"]))   # dry, wet, jet (dry)
+
+
+@pytest.mark.parametrize("scale", [1.0, 5.0])
+def test_through_thickness_painting(scale):
+    case = _jet_case()
+    g = VesselGeometry3D(case, thickness_scale=scale)
+    g.set_level(1.0)
+    x = np.linspace(0.0, case.vessel.wall_m, 12)
+    T_nodes = 100.0 + 500.0 * x / x[-1]                             # 100 C inside, 600 C outside
+    g.paint_wall({"dry": (x, T_nodes), "wet": 50.0, "peak_dry": (x, T_nodes + 100.0)})
+    T, depth, region = g.wall.cell_data["T_C"], g._w_depth, g.wall.cell_data["region"]
+    dry = region == 0
+    np.testing.assert_allclose(T[dry], 100.0 + 500.0 * depth[dry] / case.vessel.wall_m,
+                               rtol=1e-9)
+    assert T[dry].min() < 140.0 and T[dry].max() > 560.0            # gradient through the wall
+    assert set(T[region == 1]) == {50.0}
