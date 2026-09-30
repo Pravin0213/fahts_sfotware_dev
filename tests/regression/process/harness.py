@@ -1,7 +1,10 @@
 """Golden-output harness for the process (vessel) model.
 
-Freezes the behaviour of the original vfpy code (snapshot in ``legacy/vfpy/``) so that the
-port into ``src/fahts/`` can be checked module by module against it.
+The goldens freeze the behaviour of the product code (``fahts.coupling``), so any change in
+results is visible and deliberate. History: until 2026-09-30 they were generated from the
+original vfpy code (``legacy/vfpy/``) to verify the port bit for bit; they were regenerated
+from ``fahts`` when known issue #1 (wall grid) was fixed - see the manifest and
+``docs/process_model_known_issues.md``.
 
 - ``CASES``     the golden case set (input decks in ``cases/<id>/``)
 - ``PROFILES``  named option sets (VessFire-matching default and physics-preferred)
@@ -9,9 +12,8 @@ port into ``src/fahts/`` can be checked module by module against it.
 - ``run(golden_run, impl)`` runs one with one implementation and returns
   (time series, rupture table)
 
-Implementations: ``"legacy"`` = frozen vfpy snapshot. The ported code is added here as a
-second implementation once it exists; the regression test runs every implementation
-against the same golden files.
+Implementations: ``"fahts"`` = the product code (checked against the goldens);
+``"legacy"`` = frozen vfpy snapshot (diagnostics and before/after comparisons only).
 
 The steel property tables come from the VessFire database, which may not be committed.
 A local copy is expected at ``data/reference/vessfire/vessfire.db`` (gitignored); without
@@ -20,9 +22,7 @@ it the golden tests are skipped.
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import sys
-import types
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,113 +124,24 @@ def _run_legacy(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.
     return ts, failures
 
 
-# ------------------------------------------------------------------ hybrid (port in progress)
-# While vfpy is being ported, the legacy driver (vessel2.simulate2) runs on top of the
-# ported modules: each ported module is installed under its legacy flat name before the
-# legacy code is imported. Add an entry here as each module is ported; when the driver
-# itself is ported, "fahts" calls src/fahts directly and the hybrid goes away.
-
-def _shim(name: str, **attrs) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    mod.__dict__.update(attrs)
-    return mod
-
-
-def _ported_modules() -> dict[str, types.ModuleType]:
-    import fahts.fire as fire
-    import fahts.thermo as thermo
-    from fahts.common.constants import SIGMA
-    from fahts.materials import SteelTable
-    from fahts.thermo import component_data
-    from fahts.wall.column_1d import REFERENCE_NODES_105MM, WallColumn
-    from fahts.wall.column_1d.tridiagonal import solve_tridiagonal
-    from validation.vessfire.material_db import load_steel_table
-
-    class Material(SteelTable):          # legacy API: Material.from_vessfire_db(name)
-        @classmethod
-        def from_vessfire_db(cls, name, db=MATERIAL_DB):
-            return load_steel_table(name, db)
-
-    import fahts.relief.blowdown as blowdown
-    import fahts.relief.ideal_gas as ideal_gas
-    from fahts.relief.psv import PSVOpening
-    from fahts.rupture import membrane_stresses
-
-    def PSV(_fluid, spec, _model):       # legacy signature; only the opening is used
-        return PSVOpening(spec)
-
-    return {
-        "valves": ideal_gas,
-        "valves2": _shim("valves2", mdot=blowdown.mdot),
-        "vessel": _shim("vessel", AmbientAuto=fire.AmbientAuto, PSV=PSV,
-                        stresses=membrane_stresses, H_CORRELATIONS=_legacy_h_correlations()),
-        "heat_transfer": _shim("heat_transfer", SIGMA=SIGMA, Material=Material,
-                               GuidelineFire=fire.GuidelineFire, FireBC=fire.FireBC,
-                               PrescribedFluxBC=fire.PrescribedFluxBC,
-                               AmbientBC=fire.AmbientBC, WallColumn=WallColumn,
-                               VESSFIRE_LOG_NODES_105MM=REFERENCE_NODES_105MM,
-                               thomas=solve_tridiagonal),
-        "thermo_pr": _shim("thermo_pr", PRMixture=thermo.PRMixture,
-                           FlashResult=thermo.FlashResult, Phase=thermo.Phase,
-                           characterise_pseudo=thermo.characterise_pseudo),
-        "thermo_data": component_data,
-    }
-
-
-def _legacy_h_correlations() -> dict:
-    """Not ported yet (moves to process/inner_ht): taken from the legacy file by source."""
-    src = (LEGACY_VFPY / "vessel.py").read_text()
-    start = src.index("H_CORRELATIONS = {")
-    end = src.index("}\n", start) + 2
-    ns: dict = {}
-    exec(src[start:end], ns)  # noqa: S102 - trusted, frozen reference file
-    return ns["H_CORRELATIONS"]
-
-
-def _hybrid_worker(case: dict, t_end: float, opts: dict):
-    """Runs in a fresh process so legacy and ported modules never share sys.modules."""
-    warnings.simplefilter("ignore")
-    sys.modules.update(_ported_modules())
-    vessel2, _ = _legacy_modules()
-    for obj in (vessel2.PRMixture, vessel2.WallColumn, vessel2.GuidelineFire,
-                vessel2.AmbientAuto, vessel2.valves2.mdot, vessel2.mdot_orifice_line,
-                vessel2.stresses):
-        assert obj.__module__.startswith("fahts."), f"hybrid is not using the port: {obj}"
-    from fahts.rupture import evaluate
-    from fahts.wall.column_1d import REFERENCE_NODES_105MM
-    from validation.vessfire.material_db import load_steel_table
-
-    opt = vessel2.Options2(t_end=t_end, out_every=OUT_EVERY, **opts)
-    ts, _meta = vessel2.simulate2(case, opt)
-    mat = load_steel_table(case["seg"]["material"], MATERIAL_DB)
-    _ss, failures = evaluate(ts, case, mat, x_nodes=REFERENCE_NODES_105MM)
-    return ts, failures
-
-
-def _run_hybrid(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(1) as pool:
-        return pool.apply(_hybrid_worker, (case, t_end, opts))
-
-
 def _run_fahts(case: dict, t_end: float, opts: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The product code only: fahts.coupling + fahts.rupture (no legacy import)."""
     from fahts.coupling import VesselFireOptions, simulate
     from fahts.rupture import evaluate
-    from fahts.wall.column_1d import REFERENCE_NODES_105MM
     from validation.vessfire.material_db import load_steel_table
 
     mat = load_steel_table(case["seg"]["material"], MATERIAL_DB)
     opt = VesselFireOptions(t_end=t_end, out_every=OUT_EVERY, **opts)
-    ts, _meta = simulate(case, opt, mat)
-    _ss, failures = evaluate(ts, case, mat, x_nodes=REFERENCE_NODES_105MM)
+    ts, meta = simulate(case, opt, mat)
+    _ss, failures = evaluate(ts, case, mat, x_nodes=meta["x_nodes"])
     return ts, failures
 
 
-IMPLEMENTATIONS = {"legacy": _run_legacy, "hybrid": _run_hybrid, "fahts": _run_fahts}
+IMPLEMENTATIONS = {"fahts": _run_fahts, "legacy": _run_legacy}
+GOLDEN_IMPLEMENTATIONS = ("fahts",)       # implementations that must reproduce the goldens
 
 
-def run(gr: GoldenRun, impl: str = "legacy") -> tuple[pd.DataFrame, pd.DataFrame]:
+def run(gr: GoldenRun, impl: str = "fahts") -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run one golden run; returns (time series, rupture/failure table)."""
     case = read_case(CASE_DIR / gr.case_id)
     with warnings.catch_warnings():

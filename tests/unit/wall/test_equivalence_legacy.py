@@ -6,8 +6,10 @@ import numpy as np
 import pytest
 
 from fahts import fire
-from fahts.wall.column_1d import REFERENCE_NODES_105MM, WallColumn
+from fahts.wall.column_1d import WallColumn
 from tests.legacy_ref import legacy
+
+NODES_105MM = legacy("heat_transfer").VESSFIRE_LOG_NODES_105MM
 
 pytest.importorskip("CoolProp")
 
@@ -18,7 +20,7 @@ def _run(ht_mod, vessel_mod, mat, mode, n=300):
     f = ht_mod.GuidelineFire(eps_flame=1.0, eps_surf=0.7, h_flame=25.0, T_ref=293.15,
                              t_air_mode=mode)
     bc = ht_mod.FireBC(f, [0.0, 200.0, 201.0, 1e6], [150e3, 150e3, 0.0, 0.0], after=amb)
-    col = ht_mod.WallColumn(mat, 1.0, REFERENCE_NODES_105MM, bc, 293.15)
+    col = ht_mod.WallColumn(mat, 1.0, NODES_105MM, bc, 293.15)
     out = []
     for k in range(n):
         col.step(1.0, k + 0.5, 300.0 + 0.5 * k, 50.0 + k)

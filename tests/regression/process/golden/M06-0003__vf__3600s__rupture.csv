@@ -1,23 +1,23 @@
 variant,allow_basis,criterion,t_fail_s,location
-membrane,mean,vonMises,1890.6084071049404,mem
-membrane,local,vonMises,1562.4912115336842,mem
-limit,through-wall avg,vonMises,1872.085515365749,mem
-lame,local,vonMises,1625.0215598752391,out
-lame,mean,vonMises,1866.9234020006629,in
-thermal_elastic,local,vonMises,1176.4084680019014,in
-thermal_elastic,mean,vonMises,1125.7103174786778,in
-thermal_tg,local,vonMises,1331.0644756786703,in
-thermal_tg,mean,vonMises,1271.426308160691,in
-thermal_2x,local,vonMises,2295.8591478938183,in
-thermal_2x,mean,vonMises,2067.776781506946,in
-membrane,mean,Tresca,1747.1065032341,mem
-membrane,local,Tresca,1464.3362036083627,mem
-limit,through-wall avg,Tresca,1723.1606928513897,mem
-lame,local,Tresca,1527.4813508549805,out
-lame,mean,Tresca,1710.1483896261807,in
-thermal_elastic,local,Tresca,918.44907138572432,in
-thermal_elastic,mean,Tresca,872.07348515145327,in
-thermal_tg,local,Tresca,1023.7828371415321,in
-thermal_tg,mean,Tresca,972.97767780530182,in
-thermal_2x,local,Tresca,2156.8403388076053,in
-thermal_2x,mean,Tresca,1976.7084955534883,in
+membrane,mean,vonMises,1144.5443731190546,mem
+membrane,local,vonMises,1022.8537483031807,mem
+limit,through-wall avg,vonMises,1143.6874514011631,mem
+lame,local,vonMises,1062.4002075982905,out
+lame,mean,vonMises,1130.8249685927649,in
+thermal_elastic,local,vonMises,959.48058212511842,in
+thermal_elastic,mean,vonMises,905.10934119684896,in
+thermal_tg,local,vonMises,1000.3599665362848,in
+thermal_tg,mean,vonMises,941.25829795324444,in
+thermal_2x,local,vonMises,1402.3776170650535,in
+thermal_2x,mean,vonMises,1305.5632650983146,in
+membrane,mean,Tresca,1073.3850004317533,mem
+membrane,local,Tresca,960.64248357937925,mem
+limit,through-wall avg,Tresca,1061.1039156652882,mem
+lame,local,Tresca,1000.6407441779082,out
+lame,mean,Tresca,1052.846628806805,in
+thermal_elastic,local,Tresca,827.92556001199398,in
+thermal_elastic,mean,Tresca,802.95120333105899,in
+thermal_tg,local,Tresca,886.40998381763427,in
+thermal_tg,mean,Tresca,835.29444653160954,in
+thermal_2x,local,Tresca,1325.9097654157802,in
+thermal_2x,mean,Tresca,1237.6890463794391,in

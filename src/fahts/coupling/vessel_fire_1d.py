@@ -39,6 +39,7 @@ Known issues (kept for behaviour-preserving port): docs/process_model_known_issu
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 
@@ -65,7 +66,9 @@ from fahts.relief.ideal_gas import mdot_orifice_line, orifice_G
 from fahts.relief.psv import PSVOpening
 from fahts.rupture import membrane_stresses
 from fahts.thermo import FlashResult, PRMixture
-from fahts.wall.column_1d import REFERENCE_NODES_105MM, WallColumn
+from fahts.wall.column_1d import WallColumn, radial_nodes
+
+log = logging.getLogger(__name__)
 
 G_ACC = 9.81  # see docs/process_model_known_issues.md #5 (two gravity values)
 P_ATM = 101325.0
@@ -181,9 +184,18 @@ class VesselFireModel:
 
         # ------------------------------------------------------------ wall
         f_wet = geom.wetted_perimeter_fraction(self._level()) if not self.Lz.empty else 0.0
+        self.x_nodes = (
+            np.asarray(opt.wall_nodes, float)
+            if opt.wall_nodes is not None
+            else radial_nodes(t_w, opt.wall_cells)
+        )
+        if abs(self.x_nodes[-1] - t_w) > 1e-9:
+            log.warning(
+                "wall nodes end at %.4g m but the wall is %.4g m thick", self.x_nodes[-1], t_w
+            )
         self.cols = {
-            "dry": WallColumn(mat, D / 2, REFERENCE_NODES_105MM, self._outer_bc(), s["T_shell"]),
-            "wet": WallColumn(mat, D / 2, REFERENCE_NODES_105MM, self._outer_bc(), s["T_shell"]),
+            "dry": WallColumn(mat, D / 2, self.x_nodes, self._outer_bc(), s["T_shell"]),
+            "wet": WallColumn(mat, D / 2, self.x_nodes, self._outer_bc(), s["T_shell"]),
         }
         self.frac = {"dry": 1.0 - f_wet, "wet": f_wet}
         self.T_TAB = np.linspace(50.0, 2000.0, 7801)
@@ -254,6 +266,7 @@ class VesselFireModel:
             rupture=self.rupture,
             opt=self.opt,
             names=self.names,
+            x_nodes=self.x_nodes,
         )
         return pd.DataFrame(self.rows), meta
 

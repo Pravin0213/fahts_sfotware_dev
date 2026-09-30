@@ -4,25 +4,19 @@ from __future__ import annotations
 
 import numpy as np
 
-# Node positions through the wall, measured from the INNER surface [m], for a 105 mm shell:
-# two surface nodes plus ten interior nodes (half cell at each surface: 0, t/20, 3t/20, ...,
-# then a thin outer cell). Taken from the calibration reference's run log.
-#
-# KNOWN ISSUE (docs/process_model_known_issues.md #1): the process model uses this layout
-# for every vessel, whatever its wall thickness. Kept unchanged until the port is complete.
-REFERENCE_NODES_105MM = np.array(
-    [
-        0.0,
-        0.00525,
-        0.01575,
-        0.02625,
-        0.03675,
-        0.04725,
-        0.05775,
-        0.06825,
-        0.07875,
-        0.08925,
-        0.1017,
-        0.105,
-    ]
-)
+
+def radial_nodes(t: float, n_cells: int = 10) -> np.ndarray:
+    """Node positions [m] through a wall of thickness ``t``, measured from the inner surface.
+
+    Cell-centred layout with surface nodes: the wall is split into ``n_cells`` equal cells,
+    with one node at each cell centre plus one on each surface (``n_cells + 2`` nodes):
+    0, t/(2n), 3t/(2n), ..., t - t/(2n), t. With the vertex-centred control volumes of
+    ``WallColumn`` the two surface nodes get thin (quarter-cell) volumes, which resolves the
+    steep surface gradients under fire.
+    """
+    if t <= 0.0:
+        raise ValueError(f"wall thickness must be positive, got {t}")
+    if n_cells < 1:
+        raise ValueError(f"n_cells must be >= 1, got {n_cells}")
+    centres = (np.arange(n_cells) + 0.5) / n_cells
+    return t * np.concatenate(([0.0], centres, [1.0]))

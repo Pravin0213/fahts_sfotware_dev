@@ -1,7 +1,8 @@
-"""Process-model regression: every implementation must reproduce the frozen vfpy goldens.
+"""Process-model regression: the product code must reproduce the golden outputs.
 
-The goldens are the reference for porting Test/vfpy into src/fahts. A failure here means
-the port changed the numbers — find out why before touching tolerances or goldens.
+A failure means results changed. If the change is unintended, find out why. If it is a
+deliberate physics change, regenerate the goldens in the same commit and say why
+(``python -m tests.regression.process.generate``). Never loosen RTOL to hide a change.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def _compare_frames(new: pd.DataFrame, ref: pd.DataFrame, what: str) -> None:
                 f"{what}: column {col!r} differs"
 
 
-@pytest.mark.parametrize("impl", sorted(h.IMPLEMENTATIONS))
+@pytest.mark.parametrize("impl", h.GOLDEN_IMPLEMENTATIONS)
 @pytest.mark.parametrize("gr", h.RUNS, ids=lambda r: r.name)
 def test_matches_golden(gr: h.GoldenRun, impl: str) -> None:
     ts_path, rup_path = h.golden_paths(gr)

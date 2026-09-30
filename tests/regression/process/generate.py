@@ -1,11 +1,11 @@
-"""(Re)generate the process-model golden files from the frozen vfpy snapshot.
+"""(Re)generate the process-model golden files from the product code (fahts).
 
     python -m tests.regression.process.generate            # all runs
     python -m tests.regression.process.generate M06-0003   # only runs of these cases
 
-Only regenerate when the *reference* is meant to change (e.g. a deliberate physics fix
-that is also applied to legacy/vfpy — which should be rare and explained in the commit).
-Never regenerate to make a failing port pass.
+Only regenerate for a deliberate change in results (e.g. a physics fix), in the same
+commit, with the reason in the commit message and in ``manifest.json`` (``--reason``).
+Never regenerate to make an unintended change pass.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 def _one(gr: h.GoldenRun) -> dict:
     t0 = time.perf_counter()
-    ts, failures = h.run(gr, "legacy")
+    ts, failures = h.run(gr, "fahts")
     ts_path, rup_path = h.golden_paths(gr)
     ts.to_csv(ts_path, index=False, float_format="%.17g")
     failures.to_csv(rup_path, index=False, float_format="%.17g")
@@ -35,6 +35,17 @@ def _one(gr: h.GoldenRun) -> dict:
 
 def _md5(path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _git_head() -> str:
+    """Base commit, with "+changes" when src/ or tests/ differ from it (goldens are normally
+    regenerated before the commit that introduces the change)."""
+    import subprocess
+    head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                          text=True, cwd=h.ROOT).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain", "src", "tests"],
+                           capture_output=True, text=True, cwd=h.ROOT).stdout.strip()
+    return f"{head}+changes" if dirty else head
 
 
 def _versions() -> dict:
@@ -49,6 +60,11 @@ def _versions() -> dict:
 
 def main(argv: list[str]) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    reason = None
+    if "--reason" in argv:
+        i = argv.index("--reason")
+        reason = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
     if not h.have_material_db():
         sys.exit(f"material database missing: {h.MATERIAL_DB}")
     runs = [r for r in h.RUNS if not argv or r.case_id in argv]
@@ -62,15 +78,19 @@ def main(argv: list[str]) -> None:
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     manifest.update(
         generated=str(date.today()),
-        reference="legacy/vfpy (frozen snapshot of Test/vfpy, 2026-09-24)",
-        legacy_md5={p.name: _md5(p) for p in sorted(h.LEGACY_VFPY.glob("*.py"))},
+        reference="fahts (src/fahts, process model)",
+        base_commit=_git_head(),
         material_db_md5=_md5(h.MATERIAL_DB),
         versions=_versions(),
         out_every_s=h.OUT_EVERY,
         profiles=h.PROFILES,
         cases=h.CASES,
     )
+    manifest.pop("legacy_md5", None)
     manifest.setdefault("runs", {}).update({d["run"]: d for d in done})
+    if reason:
+        manifest.setdefault("history", []).append(
+            dict(date=str(date.today()), base_commit=_git_head(), reason=reason))
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 

@@ -10,8 +10,9 @@ import pandas as pd
 from fahts.rupture import evaluate, membrane_stresses
 from fahts.rupture.gps_fe import GeneralizedPlaneStrainFE
 from fahts.rupture.stress_solutions import lame, thermal_tg
-from fahts.wall.column_1d import REFERENCE_NODES_105MM
 from tests.legacy_ref import legacy
+
+NODES_105MM = legacy("heat_transfer").VESSFIRE_LOG_NODES_105MM
 
 
 def test_fe_matches_closed_form_for_constant_E():
@@ -49,7 +50,7 @@ def test_equivalence_with_legacy(steel, legacy_steel):
     old = legacy("stress")
     ss_old = old.stress_series(py, case["seg"], legacy_steel, "background")
     ft_old = pd.DataFrame(old.failure_times(ss_old))
-    ss_new, ft_new = evaluate(py, case, steel, x_nodes=REFERENCE_NODES_105MM)
+    ss_new, ft_new = evaluate(py, case, steel, x_nodes=NODES_105MM)
     pd.testing.assert_frame_equal(ss_new, ss_old, check_exact=True)
     pd.testing.assert_frame_equal(ft_new, ft_old, check_exact=True)
     assert ft_new.t_fail_s.notna().any()                          # the test does reach failure

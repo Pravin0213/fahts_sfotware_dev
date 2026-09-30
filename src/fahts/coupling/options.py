@@ -61,5 +61,8 @@ class VesselFireOptions:
     # say; published line physics gives 6-9 % vs VessFire on the
     # LPG cases with d - 2t and 20-37 % with d (study 14).
     use_line: bool = True  # friction in the blowdown line
-    valve_model: str = "b1"  # "b1": valves2 (API 520 orifice + Borda-Carnot expansion +
-    # real-gas PR Fanno line); "simple": valves.py ideal-gas
+    valve_model: str = "b1"  # "b1": relief.blowdown (API 520 orifice + Borda-Carnot
+    # expansion + real-gas PR Fanno line); "simple": relief.ideal_gas
+    wall_cells: int = 10  # radial cells through the steel wall (wall_column.radial_nodes)
+    wall_nodes: tuple[float, ...] | None = None  # explicit node positions [m] from the inner
+    # surface; overrides wall_cells (e.g. to reproduce another code's grid)

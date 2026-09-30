@@ -1,9 +1,11 @@
 # Process model (thermo / fire / wall.column_1d / relief / process / rupture / coupling)
 
 Ported 2026-09-30 from `Test/vfpy` (frozen reference: `legacy/vfpy/`, see its README for the
-file → package map). The port is **behaviour-preserving**: every package is checked bit for
-bit against legacy (`tests/unit/*/test_equivalence_legacy.py`) and the whole model against
-18 golden runs (`python -m pytest tests/regression --golden -q`, ~4 min per implementation).
+file → package map). The port was verified bit for bit: every package against legacy
+(`tests/unit/*/test_equivalence_legacy.py`) and the whole model against 18 golden runs. Since
+then deliberate physics fixes change results; the goldens track `fahts`
+(`python -m pytest tests/regression --golden -q`) and record why they changed.
+Compare against VessFire with `python -m validation.vessfire.compare_cases <study>`.
 
 ## Layers (imports only go down)
 

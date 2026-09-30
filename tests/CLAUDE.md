@@ -2,8 +2,8 @@
 
 ## Current State
 
-Non-GUI (2026-09-30): **995 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
-54 golden tests skipped unless `--golden`.
+Non-GUI (2026-09-30): **1006 passing, 6 pre-existing failures** (list in `docs/3d_solver_plan.md`),
+18 golden tests skipped unless `--golden`.
 GUI/VTK: 506 passing, 13 pre-existing failures (run with `QT_QPA_PLATFORM=xcb` on a display).
 
 ```bash
@@ -53,21 +53,23 @@ must parse cleanly — smoke tests for both exist.
 
 ## Golden Regression Tests — process model (`tests/regression/process/`)
 
-Freeze the behaviour of the original vfpy vessel model (`legacy/vfpy/`) so its port into
-`src/fahts/` can be verified step by step. **Run `--golden` after every porting change.**
+Freeze the results of the product process model (`fahts.coupling`) so every change in numbers
+is visible and deliberate. **Run `--golden` after any change to the process-model packages.**
 
 - `cases/<id>/` — 11 input decks (Admin/Segment/Scenario.brl, heatload.scn), one per physics
   branch (H2/CH4/LPG/pseudo/free water/retrograde; fire, BDV, PSV, ambient, rupture)
 - `golden/` — 18 runs: time series + rupture table per (case, profile, duration);
-  `manifest.json` has library versions and the legacy/DB hashes
-- `harness.py` — `IMPLEMENTATIONS`: `legacy` (frozen vfpy), `hybrid` (legacy driver on ported
-  modules, clean subprocess), `fahts` (product code only). All must match the same goldens.
-- Tolerance: `RTOL = 1e-6` of each column's magnitude. Never loosen it or regenerate goldens
-  (`python -m tests.regression.process.generate`) to make a port pass — find the difference.
+  `manifest.json`: library versions, git commit, and a `history` of why goldens changed
+- `harness.py` — `IMPLEMENTATIONS`: `fahts` (checked) and `legacy` (frozen vfpy; diagnostics
+  and before/after studies only). History: goldens came from legacy until the port was verified
+  bit for bit (2026-09-30), then were regenerated from `fahts` for the wall-grid fix (issue #1).
+- Tolerance: `RTOL = 1e-6` of each column's magnitude. Never loosen it. A deliberate physics
+  change regenerates goldens in the same commit:
+  `python -m tests.regression.process.generate --reason "<why>"`.
 - Needs CoolProp and the local material DB `data/reference/vessfire/vessfire.db` (gitignored,
   VessFire proprietary); skipped without them.
-
----
+- `tests/integration/test_energy_balance.py` — the coupled model conserves energy (first-order
+  convergence in dt); runs without the DB.
 
 ## USFOS Benchmark Test (Phase 3E.8 — NEXT TASK)
 

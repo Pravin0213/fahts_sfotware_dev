@@ -1,18 +1,6 @@
 {
-  "generated": "2026-09-29",
-  "reference": "legacy/vfpy (frozen snapshot of Test/vfpy, 2026-09-24)",
-  "legacy_md5": {
-    "fluid.py": "2f9417846c2f17d6fdf09f6da0af7de3",
-    "heat_transfer.py": "d558f68850d69c574568452d168e35f1",
-    "stress.py": "3e3536573e8e63d4f9231534082a42b7",
-    "thermo_data.py": "211aefa075145d862acd0aed18e996c8",
-    "thermo_pr.py": "668e0146d404b01941898441b14ac8d1",
-    "twophase_physics.py": "4a3bf283cda59f06e419729bb95e8ce3",
-    "valves.py": "e63a13645c8a8f1a9d47be29969a405e",
-    "valves2.py": "59537fb496ceab0bf4eaec7285c905d8",
-    "vessel.py": "fda671ab950f83cf23e64e8de43d470e",
-    "vessel2.py": "477435429a4d0f16c031863df5d25d75"
-  },
+  "generated": "2026-09-30",
+  "reference": "fahts (src/fahts, process model)",
   "material_db_md5": "324e6d598738ba6e005068ba7744dd30",
   "versions": {
     "python": "3.12.4",
@@ -48,92 +36,105 @@
     "M03-0003__vf__600s": {
       "run": "M03-0003__vf__600s",
       "rows": 61,
-      "seconds": 45.0
+      "seconds": 49.4
     },
     "M04-0003__vf__600s": {
       "run": "M04-0003__vf__600s",
       "rows": 61,
-      "seconds": 49.1
+      "seconds": 52.4
     },
     "M05-0003__vf__600s": {
       "run": "M05-0003__vf__600s",
       "rows": 61,
-      "seconds": 86.0
+      "seconds": 95.2
     },
     "M06-0003__vf__900s": {
       "run": "M06-0003__vf__900s",
       "rows": 91,
-      "seconds": 73.9
+      "seconds": 78.7
     },
     "M07-0004__vf__900s": {
       "run": "M07-0004__vf__900s",
       "rows": 91,
-      "seconds": 70.1
+      "seconds": 75.7
     },
     "M08-0001__vf__900s": {
       "run": "M08-0001__vf__900s",
       "rows": 91,
-      "seconds": 74.6
+      "seconds": 70.8
     },
     "M09-0001__vf__900s": {
       "run": "M09-0001__vf__900s",
       "rows": 91,
-      "seconds": 74.4
+      "seconds": 79.1
     },
     "M10-0001__vf__900s": {
       "run": "M10-0001__vf__900s",
       "rows": 91,
-      "seconds": 75.2
+      "seconds": 73.5
     },
     "M11-0002__vf__900s": {
       "run": "M11-0002__vf__900s",
       "rows": 91,
-      "seconds": 121.9
+      "seconds": 119.8
     },
     "M12-0004__vf__900s": {
       "run": "M12-0004__vf__900s",
       "rows": 91,
-      "seconds": 98.9
+      "seconds": 97.3
     },
     "M15-0002__vf__900s": {
       "run": "M15-0002__vf__900s",
       "rows": 91,
-      "seconds": 135.2
+      "seconds": 142.1
     },
     "M05-0003__physics__600s": {
       "run": "M05-0003__physics__600s",
       "rows": 61,
-      "seconds": 81.2
+      "seconds": 91.0
     },
     "M11-0002__physics__900s": {
       "run": "M11-0002__physics__900s",
       "rows": 91,
-      "seconds": 124.6
+      "seconds": 132.0
     },
     "M12-0004__physics__900s": {
       "run": "M12-0004__physics__900s",
       "rows": 91,
-      "seconds": 101.0
+      "seconds": 94.6
     },
     "M15-0002__physics__900s": {
       "run": "M15-0002__physics__900s",
       "rows": 91,
-      "seconds": 142.8
+      "seconds": 144.7
     },
     "M06-0003__vf__3600s": {
       "run": "M06-0003__vf__3600s",
       "rows": 361,
-      "seconds": 152.3
+      "seconds": 155.4
     },
     "M10-0001__vf__3600s": {
       "run": "M10-0001__vf__3600s",
       "rows": 361,
-      "seconds": 153.2
+      "seconds": 155.6
     },
     "M11-0002__vf__3600s": {
       "run": "M11-0002__vf__3600s",
       "rows": 361,
-      "seconds": 216.9
+      "seconds": 183.9
     }
-  }
+  },
+  "history": [
+    {
+      "date": "2026-09-29",
+      "base_commit": "8cd55f7",
+      "reason": "Initial goldens from the frozen vfpy snapshot (legacy/vfpy) to verify the port"
+    },
+    {
+      "date": "2026-09-30",
+      "base_commit": "9e302fa+changes",
+      "reason": "Known issue #1 fixed: wall grid follows the case wall thickness (radial_nodes, 10 cells) instead of the 105 mm grid; see validation/vessfire/reports/wall_grid_fix.md"
+    }
+  ],
+  "base_commit": "9e302fa+changes"
 }
