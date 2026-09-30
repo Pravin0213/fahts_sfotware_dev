@@ -24,6 +24,18 @@ def _angle_distance(a, b):
     return np.abs((np.asarray(a) - b + 180.0) % 360.0 - 180.0)
 
 
+def _merge_close(values, tol: float, period: float | None = None) -> np.ndarray:
+    """Sorted grid lines with near-duplicates merged: an inserted zone edge that coincides
+    with an existing line to round-off (0.4 vs 0.4000000000000001) must not create a
+    zero-length sliver element (singular capacity, ill-conditioned system)."""
+    v = np.asarray(values, float)
+    v = np.sort(v % period if period else v)
+    v = v[np.concatenate(([True], np.diff(v) > tol))]
+    if period and len(v) > 1 and (v[0] + period - v[-1]) <= tol:
+        v = v[:-1]
+    return v
+
+
 def wetted_half_angle_deg(level: float, D: float) -> float:
     """Half-angle of the wetted arc of a horizontal cylinder, from the bottom [deg]."""
     R = D / 2.0
@@ -42,8 +54,11 @@ class PeakZoneGeometry:
     attack_deg: float
 
     def contains(self, theta_deg, xi):
-        return ((np.asarray(xi) >= self.xi_start) & (np.asarray(xi) <= self.xi_end)
-                & (_angle_distance(theta_deg, self.attack_deg) <= self.circ_deg / 2 + 1e-9))
+        return (
+            (np.asarray(xi) >= self.xi_start)
+            & (np.asarray(xi) <= self.xi_end)
+            & (_angle_distance(theta_deg, self.attack_deg) <= self.circ_deg / 2 + 1e-9)
+        )
 
 
 @dataclass
@@ -57,20 +72,19 @@ class VesselShellMesh:
     n_length: int = 40
     n_radial: int = 6
     peak: PeakZoneGeometry | None = None
-    theta: np.ndarray = field(init=False)   # node angles [deg], 0..360 exclusive
-    x: np.ndarray = field(init=False)       # node axial positions [m]
-    r: np.ndarray = field(init=False)       # node radii [m], inner -> outer
+    theta: np.ndarray = field(init=False)  # node angles [deg], 0..360 exclusive
+    x: np.ndarray = field(init=False)  # node axial positions [m]
+    r: np.ndarray = field(init=False)  # node radii [m], inner -> outer
 
     def __post_init__(self):
         R = self.D / 2.0
         th = np.linspace(0.0, 360.0, self.n_theta, endpoint=False)
         xs = np.linspace(0.0, 1.0, self.n_length + 1)
-        if self.peak is not None:        # grid lines on the zone edges: exact zone
+        if self.peak is not None:  # grid lines on the zone edges: exact zone
             p = self.peak
-            th = np.unique(np.round(np.concatenate(
-                (th, np.mod([p.attack_deg - p.circ_deg / 2, p.attack_deg + p.circ_deg / 2],
-                            360.0))), 9))
-            xs = np.unique(np.concatenate((xs, np.clip([p.xi_start, p.xi_end], 0, 1))))
+            edges = np.mod([p.attack_deg - p.circ_deg / 2, p.attack_deg + p.circ_deg / 2], 360.0)
+            th = _merge_close(np.concatenate((th, edges)), 1e-6, period=360.0)
+            xs = _merge_close(np.concatenate((xs, np.clip([p.xi_start, p.xi_end], 0, 1))), 1e-9)
         self.theta, self.x = th, xs * self.L
         self.r = R + np.linspace(0.0, self.t, self.n_radial + 1)
         nt, nx, nr = len(th), len(xs), self.n_radial + 1
@@ -79,8 +93,9 @@ class VesselShellMesh:
         J, I, K = np.meshgrid(np.arange(nx), np.arange(nt), np.arange(nr), indexing="ij")
         thr = np.radians(th)[I]
         rr = self.r[K]
-        self.nodes = np.column_stack([self.x[J].ravel(), (rr * np.sin(thr)).ravel(),
-                                      (rr * np.cos(thr)).ravel()])
+        self.nodes = np.column_stack(
+            [self.x[J].ravel(), (rr * np.sin(thr)).ravel(), (rr * np.cos(thr)).ravel()]
+        )
         self.n_nodes = len(self.nodes)
 
         # hexahedra
@@ -88,9 +103,18 @@ class VesselShellMesh:
         j, i, k = j.ravel(), i.ravel(), k.ravel()
         i1 = (i + 1) % nt
         nid = self.node_id
-        self.hexes = np.column_stack([
-            nid(j, i, k), nid(j + 1, i, k), nid(j + 1, i1, k), nid(j, i1, k),
-            nid(j, i, k + 1), nid(j + 1, i, k + 1), nid(j + 1, i1, k + 1), nid(j, i1, k + 1)])
+        self.hexes = np.column_stack(
+            [
+                nid(j, i, k),
+                nid(j + 1, i, k),
+                nid(j + 1, i1, k),
+                nid(j, i1, k),
+                nid(j, i, k + 1),
+                nid(j + 1, i, k + 1),
+                nid(j + 1, i1, k + 1),
+                nid(j, i1, k + 1),
+            ]
+        )
         self.n_hexes = len(self.hexes)
 
         # surface faces (i, j) on the inner (k = 0) and outer (k = n_r) surfaces
@@ -98,27 +122,29 @@ class VesselShellMesh:
         fj, fi = fj.ravel(), fi.ravel()
         fi1 = (fi + 1) % nt
         dth = np.radians((th[fi1] - th[fi]) % 360.0)
-        dth[dth == 0.0] = 2 * np.pi                    # single-division ring (not used)
+        dth[dth == 0.0] = 2 * np.pi  # single-division ring (not used)
         dx = self.x[fj + 1] - self.x[fj]
         theta_c = np.degrees(np.radians(th[fi]) + dth / 2) % 360.0
         xi_c = (self.x[fj] + dx / 2) / self.L
         self.face_theta, self.face_xi = theta_c, xi_c
         self._face_corners = [(fj, fi), (fj + 1, fi), (fj + 1, fi1), (fj, fi1)]
 
-        def areas(radius):                         # flat quads: chord x length
+        def areas(radius):  # flat quads: chord x length
             return 2 * radius * np.sin(dth / 2) * dx
 
         self.outer_face_area = areas(self.r[-1])
         self.inner_face_area = areas(self.r[0])
-        self.face_in_peak = (self.peak.contains(theta_c, xi_c) if self.peak is not None
-                             else np.zeros(len(fi), bool))
-        self.outer_nodes = nid(*np.meshgrid(np.arange(nx), np.arange(nt), indexing="ij"),
-                               nr - 1).ravel()
-        self.inner_nodes = nid(*np.meshgrid(np.arange(nx), np.arange(nt), indexing="ij"),
-                               0).ravel()
+        self.face_in_peak = (
+            self.peak.contains(theta_c, xi_c) if self.peak is not None else np.zeros(len(fi), bool)
+        )
+        self.outer_nodes = nid(
+            *np.meshgrid(np.arange(nx), np.arange(nt), indexing="ij"), nr - 1
+        ).ravel()
+        self.inner_nodes = nid(*np.meshgrid(np.arange(nx), np.arange(nt), indexing="ij"), 0).ravel()
         # outer node areas split by flux type (surface index = j * nt + i)
         self.outer_area_background = self._to_surface_nodes(
-            self.outer_face_area * ~self.face_in_peak)
+            self.outer_face_area * ~self.face_in_peak
+        )
         self.outer_area_peak = self._to_surface_nodes(self.outer_face_area * self.face_in_peak)
         self.inner_area = self._to_surface_nodes(self.inner_face_area)
         self.set_level(0.0)

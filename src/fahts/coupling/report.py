@@ -6,8 +6,12 @@ import math
 
 from fahts.coupling.runner import CaseResult
 
-REGIONS = (("background", "dry wall"), ("wet", "wetted wall"), ("peak", "peak zone (dry)"),
-           ("peak_wet", "peak zone (wetted)"))
+REGIONS = (
+    ("background", "dry wall"),
+    ("wet", "wetted wall"),
+    ("peak", "peak zone (dry)"),
+    ("peak_wet", "peak zone (wetted)"),
+)
 
 
 def _fmt_time(t) -> str:
@@ -43,9 +47,12 @@ def summary_lines(res: CaseResult) -> list[tuple[str, str]]:
     """(label, value) pairs describing a result (also used by tests and reports)."""
     ts, fail = res.series, res.failures
     first = fail.dropna(subset=["t_fail_s"]).sort_values("t_fail_s")
-    earliest = ("—" if first.empty else
-                f"{_fmt_time(first.t_fail_s.iloc[0])} — {first.variant.iloc[0]}, "
-                f"{first.criterion.iloc[0]}, {first.allow_basis.iloc[0]}")
+    earliest = (
+        "—"
+        if first.empty
+        else f"{_fmt_time(first.t_fail_s.iloc[0])} — {first.variant.iloc[0]}, "
+        f"{first.criterion.iloc[0]}, {first.allow_basis.iloc[0]}"
+    )
     walls = [label for c, label in REGIONS if c in regions_with_area(res)]
     return [
         ("Case", res.case.name),

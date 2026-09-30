@@ -162,6 +162,17 @@ def evaluate(py: pd.DataFrame, case: dict, mat: SteelTable, col: str | None = No
     seg = case["seg"]
     if col is None:
         cs = columns(py)
-        col = max(cs, key=lambda c: py[f"{c}_T_mean_C"].max()) if cs else "background"
+        col = (
+            max(
+                cs,
+                key=lambda c: (
+                    py[f"{c}_T_mean_C"].max(skipna=True)
+                    if py[f"{c}_T_mean_C"].notna().any()
+                    else -np.inf
+                ),
+            )
+            if cs
+            else "background"
+        )
     ss = stress_series(py, seg, mat, col, **kw)
     return ss, pd.DataFrame(failure_times(ss))

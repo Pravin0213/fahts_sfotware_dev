@@ -47,6 +47,7 @@ import numpy as np
 import pandas as pd
 
 from fahts.coupling.options import VesselFireOptions
+from fahts.coupling.wall3d_coupling import Wall3DCoupling
 from fahts.coupling.wall_regions import PeakZone, region_fractions
 from fahts.fire import AmbientAuto, FireBC, GuidelineFire
 from fahts.materials import SteelTable
@@ -237,9 +238,18 @@ class VesselFireModel:
         self.out_every = opt.out_every or float(adm.get("output_frequence", 10))
         self.n_steps = int(round(t_end / self.dt))
 
-        self.E_wall0 = (
-            sum(c.energy() * self.frac[k] for k, c in self.cols.items() if self.frac[k] > 0) * L
-        )
+        # 3-D wall (Hex8 solid shell) instead of the 1-D region columns
+        if opt.wall_model not in ("1d", "3d"):
+            raise ValueError(f"wall_model must be '1d' or '3d', got {opt.wall_model!r}")
+        self.wall3d = Wall3DCoupling(self) if opt.wall_model == "3d" else None
+        if self.wall3d is not None:
+            self.frac = self.wall3d.fractions()
+            self.x_nodes = self.wall3d.x_nodes
+            self.E_wall0 = self.wall3d.energy()
+        else:
+            self.E_wall0 = (
+                sum(c.energy() * self.frac[k] for k, c in self.cols.items() if self.frac[k] > 0) * L
+            )
         self.m_liq0 = self.Lz.mass if not self.Lz.empty else 0.0
         self.m_gas0 = self.G.mass
         self.U0 = (self.G.H - P * self.G.V) + (
@@ -293,6 +303,9 @@ class VesselFireModel:
             names=self.names,
             x_nodes=self.x_nodes,
         )
+        if self.wall3d is not None:
+            w = self.wall3d
+            meta["wall3d"] = dict(mesh=w.mesh, times=np.array(w.times), T=np.array(w.history))
         return pd.DataFrame(self.rows), meta
 
     def step(self, step: int) -> None:
@@ -307,14 +320,21 @@ class VesselFireModel:
 
         self._refresh_saturation(c)
         self._valve_flows(c)
-        self._dry_wall(c)
-        self._wet_wall(c)
+        if self.wall3d is not None:
+            self.wall3d.step(c)  # both wall stages on the 3-D shell
+        else:
+            self._dry_wall(c)
+            self._wet_wall(c)
         self._interface(c)
         self._zone_balances(c)
         self._solve_pressure(c, step)
         self._phase_transfer(c)
         self._merge_vanishing_zones()
-        self._reweight_wall()
+        if self.wall3d is not None:
+            self.wall3d.set_level(self._level())  # the wall stays, the liquid moves
+            self.frac = self.wall3d.fractions()
+        else:
+            self._reweight_wall()
         self._check_finite(c)
 
         if time >= self.next_out - 1e-9:
@@ -370,15 +390,23 @@ class VesselFireModel:
     def _record(self, time: float) -> None:
         s, mat, cols, frac, info, P = self.s, self.mat, self.cols, self.frac, self.info, self.P
         G, Lz = self.G, self.Lz
-        hot = max(cols, key=lambda k: cols[k].T_mean() if frac[k] > 0 else -1)
-        Tm = cols[hot].T_mean()
+        if self.wall3d is not None:
+            profiles = self.wall3d.region_profiles()
+            Tm = self.wall3d.through_wall_mean(profiles["hot"][0])  # local hot spot
+            self.wall3d.store(time)
+        else:
+            hot = max(cols, key=lambda k: cols[k].T_mean() if frac[k] > 0 else -1)
+            Tm = cols[hot].T_mean()
         f = mat.f_uts_at(Tm) if s.get("stress_type", "U") == "U" else mat.f_yield_at(Tm)
         allow = s["strength_mpa"] * s.get("stress_factor", 1.0) * f
         s_h, s_l, vm, tr = membrane_stresses(P, self.D, self.t_w, s.get("ext_long_mpa", 0.0))
         for crit, val in (("vonMises", vm), ("Tresca", tr)):
             if self.rupture[crit] is None and val >= allow:
                 self.rupture[crit] = time
-        E_wall = sum(c.energy() * frac[k] for k, c in cols.items() if frac[k] > 0) * self.L
+        if self.wall3d is not None:
+            E_wall = self.wall3d.energy()
+        else:
+            E_wall = sum(c.energy() * frac[k] for k, c in cols.items() if frac[k] > 0) * self.L
         U = (G.H - P * G.V) + ((Lz.H - P * Lz.V) if not Lz.empty else 0.0)
         bal = (E_wall - self.E_wall0) + (U - self.U0) + self.H_out + self.Q_sink - self.Q_fire
         gv = self._gas_vapour()
@@ -419,6 +447,16 @@ class VesselFireModel:
         )
         if self.peak:
             r["f_peak_wet"] = frac["peak_wet"]
+        if self.wall3d is not None:
+            for key, (prof, _share, q_out) in profiles.items():
+                r[f"{key}_T_out_C"] = prof[-1] - 273.15
+                r[f"{key}_T_in_C"] = prof[0] - 273.15
+                r[f"{key}_T_mean_C"] = self.wall3d.through_wall_mean(prof) - 273.15
+                r[f"{key}_q_net_kW"] = q_out / 1e3
+                for i, Ti in enumerate(prof):
+                    r[f"{key}_T{i+1}_C"] = Ti - 273.15
+            self.rows.append(r)
+            return
         names = {"dry": "background", "wet": "wet", "peak_dry": "peak", "peak_wet": "peak_wet"}
         for k, c in cols.items():
             key = names[k]
@@ -1005,12 +1043,12 @@ class VesselFireModel:
     def _check_finite(self, c: StepContext) -> None:
         """Stop at the first non-finite state with diagnostics."""
         cols, G, P, info = self.cols, self.G, self.P, self.info
-        if not (
-            all(np.all(np.isfinite(col.T)) for k, col in cols.items() if self.frac[k] > 0)
-            and np.isfinite(G.T)
-            and np.isfinite(P)
-            and np.isfinite(G.H)
-        ):
+        wall_ok = (
+            np.all(np.isfinite(self.wall3d.solver.T))
+            if self.wall3d is not None
+            else all(np.all(np.isfinite(col.T)) for k, col in cols.items() if self.frac[k] > 0)
+        )
+        if not (wall_ok and np.isfinite(G.T) and np.isfinite(P) and np.isfinite(G.H)):
             raise FloatingPointError(
                 f"non-finite state at t={c.time}: P={P}, G.T={G.T}, G.H={G.H}, G phases="
                 f"{G.r.phase_names}, L phases={self.Lz.r.phase_names}, h_dry={info['h_dry']}, "

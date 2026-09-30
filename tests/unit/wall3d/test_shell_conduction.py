@@ -22,6 +22,8 @@ def test_mesh_geometry():
     m = VesselShellMesh(D=2.0, t=0.06, L=6.0, n_theta=72, n_length=30, n_radial=4, peak=peak)
     detJ = np.linalg.det(hex8_jacobians(m.nodes[m.hexes]))
     assert detJ.min() > 0.0                                             # all hexes valid
+    # zone edges that coincide with grid lines to round-off must not leave sliver elements
+    assert np.diff(m.x).min() > 0.5 * 6.0 / 30 and np.diff(m.theta).min() > 1.0
     R = 1.0
     s = ShellConduction3D(m, const_steel(), 293.15)
     assert s.volume == pytest.approx(np.pi * ((R + 0.06) ** 2 - R ** 2) * 6.0, rel=2e-3)
@@ -74,6 +76,19 @@ def test_radial_profile_matches_1d_column():
     T1 = np.interp(r3, col.R - D / 2, col.T)
     assert np.abs(prof[0] - T1).max() < 1.0                             # K, after 300 s
     assert prof[0][-1] - prof[0][0] > 50.0                              # real gradient
+
+
+def test_heating_never_undershoots():
+    """M-matrix operator + lumped capacity: heating only can never cool any node (a sliver
+    element from a duplicated grid line broke this and the solver's conditioning)."""
+    peak = PeakZoneGeometry(0.4, 0.6, 60.0, 0.0)
+    m = VesselShellMesh(D=2.0, t=0.03, L=2.0, n_theta=72, n_length=40, n_radial=3, peak=peak)
+    s = ShellConduction3D(m, const_steel(), 300.0)
+    for _ in range(20):
+        s.step(1.0, lambda T: (200e3 * m.outer_area_peak, np.zeros_like(T)),
+               lambda T: (np.zeros_like(T), np.zeros_like(T)))
+    assert s.T.min() >= 300.0 - 1e-6
+    assert s.cg_iterations / 20 < 10                                   # line preconditioner
 
 
 def test_hot_patch_spreads_sideways():

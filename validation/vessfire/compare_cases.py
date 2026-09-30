@@ -331,6 +331,10 @@ GOLDEN_CASES = ("M03-0003", "M04-0003", "M05-0003", "M06-0003", "M07-0004", "M08
                 "M09-0001", "M10-0001", "M11-0002", "M12-0004", "M15-0002")
 
 STUDIES = {
+    "wall3d": {
+        "1-D wall (regions)": dict(),
+        "3-D wall (Hex8 shell)": dict(wall_model="3d"),
+    },
     "peak_zone": {
         "before (background flux only)": dict(peak_zone=False),
         "after (peak zone regions)": dict(),
@@ -382,6 +386,8 @@ def main(argv: list[str]) -> None:
         cases = select_cases(per_module, seed=seed, include=GOLDEN_CASES)
         if name == "peak_zone":
             cases = peak_cases()
+        if name == "wall3d":                  # the sample + every jet-fire case
+            cases = sorted(set(cases) | set(peak_cases()))
         if name == "fire_boundary":         # only fire cases (from the calibration features)
             base = pd.read_csv(REPORTS / "calibration_recheck.csv")
             fire = set(base[(base.config == "baseline") & (base.f_fire == True)].case)  # noqa: E712
