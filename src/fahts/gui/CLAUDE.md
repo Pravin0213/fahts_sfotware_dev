@@ -1,9 +1,13 @@
 # GUI Domain — FAHTS
 
-## Two workspaces (tabs of the main window)
+## Two solver tabs (window title "Vessel Thermal and Rupture Solver")
 
-- **Structure (3-D)** — the original USFOS / fire-zone / 3-D heat solver view (below).
-- **Process vessel** — `gui/process/` (vessel in fire; see section at the end).
+Directly under the menu bar, full width (`MainWindow._workspace_tabs`, `TAB_HEAT`, `TAB_RUPTURE`):
+- **Heat Transfer Solver** — the original USFOS / fire-zone / 3-D heat solver view (below). Its
+  main toolbar (`_main_toolbar`) and animation toolbar (`_anim_toolbar`) live inside this tab
+  (`_heat_page_layout`), not in the window's toolbar areas.
+- **Vessel Rupture Solver** — `gui/process/` (vessel in fire; see section at the end); the tab
+  text shows the case file and a `*` for unsaved edits.
 
 ## Main Window — main_window.py (1251 lines)
 
@@ -111,7 +115,7 @@ Key methods:
 
 ---
 
-## Process vessel workspace — `gui/process/`
+## Vessel Rupture Solver workspace — `gui/process/`
 
 Edits a `fahts.coupling.VesselCase`, runs it (`fahts.coupling.run_case`) and shows results.
 Created before the menus (`MainWindow._process_ws`); menu **Process** (new / open / save /

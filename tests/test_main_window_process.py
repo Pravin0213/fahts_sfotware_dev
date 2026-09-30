@@ -31,7 +31,14 @@ def window(qapp):
 def test_process_menu_and_tabs(window):
     menus = [a.text() for a in window.menuBar().actions()]
     assert "&Process" in menus
-    assert window._workspace_tabs.count() == 2
+    assert window.windowTitle() == "Vessel Thermal and Rupture Solver"
+    tabs = window._workspace_tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Heat Transfer Solver",
+                                                             "Vessel Rupture Solver"]
+    assert tabs.tabBar().expanding()
+    # the structure toolbars live inside the Heat Transfer Solver tab, not above the tabs
+    assert tabs.widget(0).isAncestorOf(window._main_toolbar)
+    assert tabs.widget(0).isAncestorOf(window._anim_toolbar)
 
 
 def test_open_deck_and_case_file(window, tmp_path):

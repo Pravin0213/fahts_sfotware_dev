@@ -60,6 +60,11 @@ from fahts.renderer.scene_manager import SceneManager
 log = logging.getLogger(__name__)
 
 
+WINDOW_TITLE = "Vessel Thermal and Rupture Solver"
+TAB_HEAT = "Heat Transfer Solver"
+TAB_RUPTURE = "Vessel Rupture Solver"
+
+
 class MainWindow(QMainWindow):
     """
     Top-level application window for FAHTS.
@@ -190,7 +195,7 @@ class MainWindow(QMainWindow):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _init_ui(self) -> None:
-        self.setWindowTitle("FAHTS — Fire Analysis and Heat Transfer Software")
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(1400, 900)
 
         self._process_ws = ProcessWorkspace()   # needed by the Process menu and the central tabs
@@ -524,9 +529,11 @@ class MainWindow(QMainWindow):
         help_m.addAction(self._action_about)
 
     def _build_toolbar(self) -> None:
+        # lives inside the Heat Transfer Solver tab (placed by _build_central), so the two
+        # solver tabs sit directly under the menu bar
         tb = QToolBar("Main", self)
         tb.setMovable(False)
-        self.addToolBar(tb)
+        self._main_toolbar = tb
 
         tb.addAction(self._action_open)
         tb.addSeparator()
@@ -567,7 +574,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Animation", self)
         tb.setMovable(False)
         tb.setObjectName("anim_toolbar")
-        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, tb)
+        self._heat_page_layout.addWidget(tb)       # bottom of the Heat Transfer Solver tab
         self._anim_toolbar = tb
 
         # ── Step navigation buttons ───────────────────────────────────────────
@@ -673,13 +680,28 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(1, 1)   # right: expands
         main_splitter.setSizes([260, 1140])
 
-        # Two workspaces: the 3-D structure (above) and the process vessel (vessel in fire)
+        # Two solvers, one tab each, directly under the menu bar and across the full width:
+        # heat transfer (3-D structure: toolbar, viewport, animation bar) and vessel rupture
+        heat_page = QWidget()
+        self._heat_page_layout = QVBoxLayout(heat_page)
+        self._heat_page_layout.setContentsMargins(0, 0, 0, 0)
+        self._heat_page_layout.setSpacing(0)
+        self._heat_page_layout.addWidget(self._main_toolbar)
+        self._heat_page_layout.addWidget(main_splitter, 1)
+
         self._workspace_tabs = QTabWidget(self)
-        self._workspace_tabs.addTab(main_splitter, "Structure (3-D)")
+        self._workspace_tabs.setObjectName("solverTabs")
+        self._workspace_tabs.setDocumentMode(True)
+        self._workspace_tabs.tabBar().setExpanding(True)
+        self._workspace_tabs.setStyleSheet(
+            "#solverTabs > QTabBar::tab { height: 32px; font-weight: bold; color: palette(mid); }"
+            "#solverTabs > QTabBar::tab:selected { color: palette(bright-text);"
+            " border-bottom: 3px solid palette(highlight); }")
+        self._workspace_tabs.addTab(heat_page, TAB_HEAT)
         self._process_ws.status_message.connect(self._status)
         self._process_ws.title_changed.connect(
-            lambda t: self._workspace_tabs.setTabText(1, f"Process vessel — {t}"))
-        self._workspace_tabs.addTab(self._process_ws, "Process vessel")
+            lambda t: self._workspace_tabs.setTabText(1, f"{TAB_RUPTURE} — {t}"))
+        self._workspace_tabs.addTab(self._process_ws, TAB_RUPTURE)
         self.setCentralWidget(self._workspace_tabs)
 
     def _build_status_bar(self) -> None:
