@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import atexit
+
 import CoolProp.CoolProp as CP
 
 from fahts.common.constants import G_ACC, P_ATM, SIGMA
@@ -21,6 +23,14 @@ class AmbientBC:
 
 
 _AIR = CP.AbstractState("HEOS", "Air")
+
+
+@atexit.register
+def _release_air_state() -> None:
+    """Free the CoolProp state before interpreter teardown (CoolProp 8 / nanobind otherwise
+    prints "leaked instances" warnings at exit)."""
+    global _AIR
+    _AIR = None
 
 
 def h_ambient(T_s, T_env, D_out, spec):

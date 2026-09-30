@@ -5,6 +5,8 @@ CoolProp) for free-water phases.
 
 from __future__ import annotations
 
+import atexit
+
 import CoolProp.CoolProp as CP
 import numpy as np
 
@@ -12,6 +14,14 @@ from fahts.thermo import PRMixture
 
 
 _W = CP.AbstractState("HEOS", "Water")
+
+
+@atexit.register
+def _release_water_state() -> None:
+    """Free the CoolProp state before interpreter teardown (CoolProp 8 / nanobind otherwise
+    prints "leaked instances" warnings at exit)."""
+    global _W
+    _W = None
 
 
 def phase_beta(p):
