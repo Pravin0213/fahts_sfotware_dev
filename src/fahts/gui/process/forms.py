@@ -303,6 +303,12 @@ class StressRunForm(_Form):
 # (option, choices or None for numbers, help). Defaults come from VesselFireOptions; only
 # values that differ from the default are stored in the case.
 MODEL_OPTIONS = [
+    ("wall_model", ["1d", "3d"],
+     "Steel wall: 1d = radial conduction per wall region (fast, validated against VessFire); "
+     "3d = Hex8 solid shell, heat also flows around and along the wall (realistic hot spots)"),
+    ("wall3d_n_theta", None, "3-D wall: divisions around the circumference"),
+    ("wall3d_n_length", None, "3-D wall: divisions along the shell"),
+    ("wall3d_n_radial", None, "3-D wall: layers through the thickness"),
     ("h_corr", ["evans_stefany", "churchill_chu", "mcadams", "laminar", "woodfield_h2"],
      "Wall -> gas natural convection correlation"),
     ("wet_boiling", ["nucleate_only", "full"], "Wetted-wall boiling curve"),

@@ -11,6 +11,7 @@ REGIONS = (
     ("wet", "wetted wall"),
     ("peak", "peak zone (dry)"),
     ("peak_wet", "peak zone (wetted)"),
+    ("hot", "hottest point (3-D wall)"),
 )
 
 

@@ -117,3 +117,13 @@ def test_3d_preview_follows_edits_without_a_display(qapp):
     ws._refresh_preview()                           # the debounce timer would do this
     assert ws.vessel_view._geom.level == pytest.approx(1.0)
     assert ws.vessel_view._geom.region_fractions()["wet"] == pytest.approx(0.5, abs=0.01)
+
+
+def test_wall_model_option(qapp):
+    ws = ProcessWorkspace()
+    w = ws.form(OptionsForm).widgets["wall_model"]
+    w.setCurrentIndex(w.property("choices").index("3d"))
+    ws.form(OptionsForm).widgets["wall3d_n_radial"].setValue(8)
+    opts = ws.current_case().options
+    assert opts == {"wall_model": "3d", "wall3d_n_radial": 8}
+    assert ws.current_case().model_options().wall_model == "3d"
