@@ -17,6 +17,8 @@ from __future__ import annotations
 import numpy as np
 import pyvista as pv
 
+from fahts.wall.fem_3d.shell_mesh import _merge_close
+
 from fahts.coupling.vessel_case import VesselCase
 
 REGION_KEYS = ("dry", "wet", "peak_dry", "peak_wet")
@@ -72,16 +74,20 @@ class VesselGeometry3D:
         th = np.linspace(0.0, 360.0, n_theta + 1)
         xs = np.linspace(0.0, 1.0, n_length + 1)
         if self.peak is not None:
-            th = np.unique(np.concatenate(
-                (th, np.mod([p.attack_deg - p.circ_deg / 2, p.attack_deg + p.circ_deg / 2], 360))))
-            xs = np.unique(np.concatenate((xs, [p.xi_start, p.xi_end])))
+            # merge near-duplicates (a zone edge on a grid line to round-off would leave a
+            # sliver), keep the closing 360 deg line for the structured grid
+            edges = np.mod([p.attack_deg - p.circ_deg / 2, p.attack_deg + p.circ_deg / 2], 360)
+            th = np.append(_merge_close(np.concatenate((th[:-1], edges)), 1e-6, period=360.0),
+                           360.0)
+            xs = _merge_close(np.concatenate((xs, [p.xi_start, p.xi_end])), 1e-9)
         self._th, self._xs = th, xs
         T, X = np.meshgrid(np.radians(th), xs * self.L, indexing="ij")
         grid = pv.StructuredGrid(X, self.R * np.sin(T), self.R * np.cos(T))
         surface = _surface(grid)
         # merge the duplicated 0/360 deg seam points: a closed shell has no seam edge (the
         # jet-zone outline would otherwise show a line where the zone crosses the top)
-        self.shell = surface.clean()
+        # tolerance: the 0 and 360 deg seam points differ by round-off (sin 2pi = -2e-16)
+        self.shell = surface.clean(tolerance=1e-9, absolute=True)
         centres = self.shell.cell_centers().points
         self._cell_theta = np.degrees(np.arctan2(centres[:, 1], centres[:, 2])) % 360.0
         self._cell_xi = centres[:, 0] / self.L
@@ -118,7 +124,8 @@ class VesselGeometry3D:
         # surface normals); (theta, x, r) would turn every cell inside out
         X, T, Rr = np.meshgrid(xs, th, r, indexing="ij")
         grid = pv.StructuredGrid(X, Rr * np.sin(T), Rr * np.cos(T))
-        self.wall = grid.cast_to_unstructured_grid().clean()   # no internal seam faces
+        # merge the seam (round-off tolerance): no internal seam faces
+        self.wall = grid.cast_to_unstructured_grid().clean(tolerance=1e-9)
         c = self.wall.cell_centers().points
         self._w_theta = np.degrees(np.arctan2(c[:, 1], c[:, 2])) % 360.0
         self._w_xi = c[:, 0] / self.L
@@ -223,3 +230,39 @@ def region_temperatures(series, row: int, which: str = "mean") -> dict[str, floa
         if name in series:
             out[key] = float(series[name].iloc[row])
     return out
+
+
+class FieldGeometry3D:
+    """The 3-D wall solver's own mesh (``wall.fem_3d.VesselShellMesh``) for display: node
+    temperatures as point data, so colours vary smoothly around, along and through the wall.
+    ``thickness_scale`` exaggerates the drawn thickness only."""
+
+    def __init__(self, mesh, thickness_scale: float = 1.0):
+        self.mesh = mesh
+        R = mesh.D / 2.0
+        pts = mesh.nodes.copy()
+        r = np.hypot(pts[:, 1], pts[:, 2])
+        f = (R + (r - R) * thickness_scale) / r
+        pts[:, 1] *= f
+        pts[:, 2] *= f
+        cells = np.hstack([np.full((mesh.n_hexes, 1), 8), mesh.hexes]).ravel()
+        self.grid = pv.UnstructuredGrid(cells, np.full(mesh.n_hexes, pv.CellType.HEXAHEDRON),
+                                        pts)
+        c = self.grid.cell_centers().points
+        self._cell_theta = np.degrees(np.arctan2(c[:, 1], c[:, 2])) % 360.0
+        self.R_out = R + mesh.t * thickness_scale
+
+    def surface(self, T_nodes_K: np.ndarray, cutaway: str = "none",
+                through_wall_mean: bool = False) -> pv.PolyData:
+        """Visible wall surface with point data ``T_C``; with ``through_wall_mean`` every
+        node shows the mean of its radial line (column)."""
+        T = np.asarray(T_nodes_K, float)
+        if through_wall_mean:
+            cols = self.mesh.columns(T)
+            w = self.mesh.r / self.mesh.r.sum()
+            T = np.repeat(cols @ w, self.mesh.nr)
+        self.grid.point_data["T_C"] = T - 273.15
+        cut = CUTAWAYS[cutaway]
+        solid = self.grid if cut is None else self.grid.extract_cells(
+            np.flatnonzero(~((self._cell_theta > cut[0]) & (self._cell_theta < cut[1]))))
+        return _surface(solid)

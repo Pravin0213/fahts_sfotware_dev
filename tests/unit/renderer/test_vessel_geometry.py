@@ -88,3 +88,24 @@ def test_through_thickness_painting(scale):
                                rtol=1e-9)
     assert T[dry].min() < 140.0 and T[dry].max() > 560.0            # gradient through the wall
     assert set(T[region == 1]) == {50.0}
+
+
+def test_seam_is_closed_where_the_jet_crosses_the_top():
+    """A zone across 0/360 deg must be one patch: no outline edge along the seam."""
+    case = _jet_case()                                    # jet centred on the top (0 deg)
+    g = VesselGeometry3D(case)
+    zone = g.shell.extract_cells(np.flatnonzero(g.shell.cell_data["region"] >= 2))
+    edges = zone.extract_feature_edges(boundary_edges=True, feature_edges=False,
+                                       manifold_edges=False, non_manifold_edges=False)
+    th = np.degrees(np.arctan2(edges.points[:, 1], edges.points[:, 2])) % 360.0
+    on_seam = (th < 1e-6) | (th > 360 - 1e-6)
+    seg = edges.lines.reshape(-1, 3)[:, 1:]                       # (n_edges, 2) point ids
+    assert not np.any(on_seam[seg[:, 0]] & on_seam[seg[:, 1]])      # no edge ALONG the seam
+    assert g.shell.n_points == (len(g._th) - 1) * len(g._xs)             # seam merged
+    assert np.diff(g._xs).min() > 1e-6 and np.diff(g._th).min() > 1e-6    # no slivers
+    surf = g.wall_surface()
+    x = surf.cell_centers().points
+    th_c = np.degrees(np.arctan2(x[:, 1], x[:, 2])) % 360.0
+    r_c = np.hypot(x[:, 1], x[:, 2])
+    inside_wall = (r_c > g.R + 1e-4) & (r_c < g.R_out - 1e-4)
+    assert not np.any(inside_wall & ((th_c < 1e-3) | (th_c > 360 - 1e-3)))  # no seam faces

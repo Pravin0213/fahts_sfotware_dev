@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QSlider,
 
 from fahts.coupling.report import regions_with_area
 from fahts.renderer.vessel_geometry import (CUTAWAYS, REGION_COLUMNS, REGION_KEYS,
-                                            VesselGeometry3D, region_profiles,
-                                            region_temperatures)
+                                            FieldGeometry3D, VesselGeometry3D,
+                                            region_profiles, region_temperatures)
 
 REGION_COLOURS = ["#b8b8b8", "#5b8fd6", "#ff9a3c", "#d9412b"]  # dry, wet, peak dry, peak wet
 REGION_LABELS = ["dry wall", "wetted wall", "jet zone (dry)", "jet zone (wetted)"]
@@ -31,6 +31,7 @@ class VesselView(QWidget):
         super().__init__(parent)
         self.plotter = None
         self._geom: VesselGeometry3D | None = None
+        self._field: FieldGeometry3D | None = None  # 3-D wall results: the solver's own field
         self._case = None
         self._result = None
         self._row = 0
@@ -108,7 +109,7 @@ class VesselView(QWidget):
 
     def show_case(self, case) -> None:
         """Geometry preview of a case (initial liquid level, regions)."""
-        self._case, self._result = case, None
+        self._case, self._result, self._field = case, None, None
         self._geom = self._make_geometry(case)
         c = case.contents
         self._geom.set_level(c.hc_liquid_depth_m + c.water_depth_m)
@@ -124,6 +125,7 @@ class VesselView(QWidget):
         self._case, self._result = result.case, result
         ts = result.series
         self._geom = self._make_geometry(result.case, peak_modelled="peak_T_mean_C" in ts)
+        self._make_field()
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(ts) - 1)
         self.slider.setValue(len(ts) - 1)
@@ -140,6 +142,7 @@ class VesselView(QWidget):
             row = self._row
             self._geom = self._make_geometry(self._result.case,
                                              peak_modelled="peak_T_mean_C" in self._result.series)
+            self._make_field()
             self.set_row(row)
         elif self._case is not None:
             mode = self.mode.currentIndex()
@@ -158,8 +161,19 @@ class VesselView(QWidget):
         self._redraw(reset_camera=reset_camera)
 
     # ------------------------------------------------------------------ drawing
+    def _make_field(self) -> None:
+        w = self._result.meta.get("wall3d") if self._result is not None else None
+        self._field = FieldGeometry3D(w["mesh"], self.thickness_scale) if w else None
+
     def _temperature_range(self, through_thickness: bool) -> tuple[float, float]:
         """Colour range over the whole run (regions with area only), so frames compare."""
+        if self._field is not None:                     # the 3-D field itself
+            T = self._result.meta["wall3d"]["T"]
+            if not through_thickness:
+                m = self._field.mesh
+                w = m.r / m.r.sum()
+                T = T.reshape(len(T), -1, m.nr) @ w
+            return float(T.min()) - 273.15, max(float(T.max()) - 273.15, float(T.min()) - 272.15)
         ts = self._result.series
         keep = set(regions_with_area(self._result))
         n = len(self._result.meta.get("x_nodes", []))
@@ -195,12 +209,20 @@ class VesselView(QWidget):
             return
         p, g, cut = self.plotter, self._geom, self.cutaway_name
         p.clear_actors()
-        scalars = self._paint()
-        surf = g.wall_surface(cut)
+        mode = self.mode.currentIndex()
+        if self._field is not None and mode > 0:
+            # 3-D wall: the solver's temperature field, smooth around / along / through
+            T = self._result.meta["wall3d"]["T"][self._row]
+            surf = self._field.surface(T, cut, through_wall_mean=(mode == 2))
+            scalars = "T_C"
+        else:
+            scalars = self._paint()
+            surf = g.wall_surface(cut)
         if scalars:
-            lo, hi = self._temperature_range(self.mode.currentIndex() == 1)
+            lo, hi = self._temperature_range(mode == 1)
             p.add_mesh(surf, scalars="T_C", cmap="inferno", clim=(lo, hi), name="wall",
-                       scalar_bar_args=dict(title="wall T [°C]", color="white", vertical=True))
+                       scalar_bar_args=dict(title="wall T [°C]", color="white", vertical=True,
+                                            fmt="%.0f"))
         else:
             p.add_mesh(surf, scalars="region", cmap=ListedColormap(REGION_COLOURS),
                        clim=(-0.5, 3.5), show_scalar_bar=False, name="wall")

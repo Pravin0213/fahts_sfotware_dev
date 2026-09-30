@@ -70,3 +70,21 @@ def test_cutaway_and_thickness_scale(view):
     view.scale.setCurrentIndex(2)                                  # x5
     assert view._geom.R_out == pytest.approx(view._geom.R + 5 * case.vessel.wall_m)
     assert "×5" in view.legend.text() and full > 0
+
+
+def test_3d_wall_result_shows_the_solver_field(view):
+    case, _ = case_from_vessfire_deck(CASES / "M06-0070")
+    case.run.t_end_s = 60.0
+    case.options = {"wall_model": "3d", "wall3d_n_theta": 36, "wall3d_n_length": 12,
+                    "wall3d_n_radial": 4}
+    res = run_case(case)
+    view.show_result(res)
+    assert view._field is not None
+    field = res.meta["wall3d"]["T"][-1] - 273.15
+    shown = view._field.grid.point_data["T_C"]
+    assert shown.max() == pytest.approx(field.max()) and shown.min() == pytest.approx(field.min())
+    lo, hi = view._temperature_range(True)
+    assert lo <= field.min() + 1e-3 and hi >= field.max() - 1e-3            # float32 field
+    view.cutaway.setCurrentIndex(2)
+    view.scale.setCurrentIndex(1)                                   # x3 rebuilds the field
+    assert view._field.R_out == pytest.approx(view._geom.R + 3 * case.vessel.wall_m)
