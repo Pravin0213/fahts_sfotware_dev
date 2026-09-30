@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -49,6 +50,7 @@ from fahts.core.io.results_writer import (
 from fahts.core.io.usfos_reader import read_usfos_fem
 from fahts.core.model.fem_model import FEMModel
 from fahts.gui.panels.heat_source_panel import HeatSourcePanel
+from fahts.gui.process.workspace import ProcessWorkspace
 from fahts.gui.panels.mesh_inspector_panel import MeshInspectorPanel
 from fahts.gui.panels.model_tree_panel import ModelTreePanel
 from fahts.gui.panels.properties_panel import PropertiesPanel
@@ -646,7 +648,15 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(1, 1)   # right: expands
         main_splitter.setSizes([260, 1140])
 
-        self.setCentralWidget(main_splitter)
+        # Two workspaces: the 3-D structure (above) and the process vessel (vessel in fire)
+        self._workspace_tabs = QTabWidget(self)
+        self._workspace_tabs.addTab(main_splitter, "Structure (3-D)")
+        self._process_ws = ProcessWorkspace()
+        self._process_ws.status_message.connect(self._status)
+        self._process_ws.title_changed.connect(
+            lambda t: self._workspace_tabs.setTabText(1, f"Process vessel — {t}"))
+        self._workspace_tabs.addTab(self._process_ws, "Process vessel")
+        self.setCentralWidget(self._workspace_tabs)
 
     def _build_status_bar(self) -> None:
         sb = QStatusBar(self)
@@ -724,14 +734,13 @@ class MainWindow(QMainWindow):
             "Heat transfer analysis (solver) available in Phase 3.",
         )
 
-    def _update_coord_display(self, world_center: "np.ndarray") -> None:
+    def _update_coord_display(self, world_center) -> None:
         """
         Called on every pyvista render to update the status bar coordinate display.
 
         *world_center* is the camera focal point in global model coordinates [m].
         The axis marker (when visible) always sits at this position.
         """
-        import numpy as np  # local to avoid circular import at module level
         vx, vy, vz = float(world_center[0]), float(world_center[1]), float(world_center[2])
         if self._scene.axis_marker_visible:
             text = f"Axis:  ({vx:10.3f},  {vy:10.3f},  {vz:10.3f}) m"
