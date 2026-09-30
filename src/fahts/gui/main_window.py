@@ -693,10 +693,15 @@ class MainWindow(QMainWindow):
         self._workspace_tabs.setObjectName("solverTabs")
         self._workspace_tabs.setDocumentMode(True)
         self._workspace_tabs.tabBar().setExpanding(True)
+        # inactive tab keeps the normal text colour (dimmed text vanished on dark themes);
+        # the active tab is marked by a lighter background and a highlight underline
         self._workspace_tabs.setStyleSheet(
-            "#solverTabs > QTabBar::tab { height: 32px; font-weight: bold; color: palette(mid); }"
-            "#solverTabs > QTabBar::tab:selected { color: palette(bright-text);"
-            " border-bottom: 3px solid palette(highlight); }")
+            "#solverTabs > QTabBar::tab { height: 32px; font-weight: bold;"
+            " color: palette(window-text); background: palette(window);"
+            " border-bottom: 3px solid transparent; }"
+            "#solverTabs > QTabBar::tab:selected { background: palette(button);"
+            " border-bottom: 3px solid palette(highlight); }"
+            "#solverTabs > QTabBar::tab:hover:!selected { background: palette(midlight); }")
         self._workspace_tabs.addTab(heat_page, TAB_HEAT)
         self._process_ws.status_message.connect(self._status)
         self._process_ws.title_changed.connect(
