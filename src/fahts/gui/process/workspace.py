@@ -10,13 +10,15 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                             QMessageBox, QPushButton, QScrollArea, QSplitter, QStackedWidget,
-                             QVBoxLayout, QWidget)
+                             QMessageBox, QProgressBar, QPushButton, QScrollArea, QSplitter,
+                             QStackedWidget, QVBoxLayout, QWidget)
 
 from fahts.coupling.vessel_case import VesselCase
 from fahts.coupling.vessfire_import import case_from_vessfire_deck
 from fahts.gui.process.contents_form import ContentsForm
 from fahts.gui.process.fire_form import FireForm
+from fahts.gui.process.results_view import ResultsView
+from fahts.gui.process.run_worker import CaseRunWorker
 from fahts.gui.process.forms import (AmbientForm, CaseInfoForm, OptionsForm, ReliefForm,
                                      StressRunForm, VesselForm)
 
@@ -30,6 +32,7 @@ class ProcessWorkspace(QWidget):
 
     status_message = pyqtSignal(str)
     title_changed = pyqtSignal(str)
+    run_finished = pyqtSignal(object)  # CaseResult
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -52,8 +55,15 @@ class ProcessWorkspace(QWidget):
                   self.btn_validate):
             bar.addWidget(b)
         bar.addStretch(1)
-        self.run_bar = QHBoxLayout()           # run controls (added by the run step)
-        bar.addLayout(self.run_bar)
+        self.btn_run = QPushButton("▶ Run")
+        self.btn_stop = QPushButton("■ Stop")
+        self.btn_stop.setEnabled(False)
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(220)
+        self.progress.setFormat("%p %")
+        self.progress.setVisible(False)
+        for w in (self.progress, self.btn_run, self.btn_stop):
+            bar.addWidget(w)
         root.addLayout(bar)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -81,6 +91,10 @@ class ProcessWorkspace(QWidget):
         self.results_placeholder = QLabel("Run the case to see results.")
         self.results_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.results_layout.addWidget(self.results_placeholder)
+        self.results = ResultsView()
+        self.results.setVisible(False)
+        self.results_layout.addWidget(self.results)
+        self._worker: CaseRunWorker | None = None
         split.addWidget(self.results_area)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
@@ -114,6 +128,8 @@ class ProcessWorkspace(QWidget):
         self.btn_save_as.clicked.connect(self._on_save_as)
         self.btn_import.clicked.connect(self._on_import)
         self.btn_validate.clicked.connect(self.validate)
+        self.btn_run.clicked.connect(self.start_run)
+        self.btn_stop.clicked.connect(self.stop_run)
         self.load_case(VesselCase())
 
     # ------------------------------------------------------------------ forms
@@ -200,6 +216,65 @@ class ProcessWorkspace(QWidget):
         if not quiet:
             self.status_message.emit(f"{len(errors)} input error(s)" if errors else "Inputs OK")
         return errors
+
+    # ------------------------------------------------------------------ run
+    def start_run(self) -> CaseRunWorker | None:
+        """Validate and run the current case in a background thread."""
+        if self._worker is not None:
+            return None
+        if self.validate():
+            self.status_message.emit("Fix the input errors before running")
+            return None
+        case = self.current_case()
+        self._worker = CaseRunWorker(case, self)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished_ok.connect(self._on_run_finished)
+        self._worker.error.connect(self._on_run_error)
+        self._worker.cancelled.connect(lambda: self._run_done("Run cancelled"))
+        self._set_running(True)
+        self.status_message.emit(f"Running {case.name} …")
+        self._worker.start()
+        return self._worker
+
+    def stop_run(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+
+    @property
+    def is_running(self) -> bool:
+        return self._worker is not None
+
+    def _set_running(self, running: bool) -> None:
+        self.btn_run.setEnabled(not running)
+        self.btn_stop.setEnabled(running)
+        self.progress.setVisible(running)
+        self.progress.setValue(0)
+        for b in (self.btn_new, self.btn_open, self.btn_import):
+            b.setEnabled(not running)
+        self.pages.setEnabled(not running)
+
+    def _on_progress(self, t: float, t_end: float) -> None:
+        self.progress.setValue(int(100 * t / max(t_end, 1e-9)))
+        self.progress.setFormat(f"{t:.0f} / {t_end:.0f} s")
+
+    def _on_run_finished(self, result) -> None:
+        self.results_placeholder.setVisible(False)
+        self.results.setVisible(True)
+        self.results.show_result(result)
+        self._run_done(f"Run finished in {result.runtime_s:.1f} s")
+        self.run_finished.emit(result)
+
+    def _on_run_error(self, message: str) -> None:
+        self._run_done("Run failed")
+        self._add_message(f"Run failed: {message}", "error")
+        QMessageBox.warning(self, "Run failed", message)
+
+    def _run_done(self, message: str) -> None:
+        if self._worker is not None:
+            self._worker.wait()
+        self._worker = None
+        self._set_running(False)
+        self.status_message.emit(message)
 
     @property
     def is_dirty(self) -> bool:
