@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QListWidget, QLis
 
 from fahts.coupling.vessel_case import VesselCase
 from fahts.coupling.vessfire_import import case_from_vessfire_deck
+from fahts.gui.process.contents_form import ContentsForm
 from fahts.gui.process.forms import (AmbientForm, CaseInfoForm, OptionsForm, ReliefForm,
                                      StressRunForm, VesselForm)
 
@@ -82,16 +83,23 @@ class ProcessWorkspace(QWidget):
         split.addWidget(self.results_area)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.setSizes([620, 880])
+        split.setSizes([680, 820])
         root.addWidget(split, 1)
 
         self.add_form("Case", CaseInfoForm())
         self.add_form("Vessel & material", VesselForm())
+        self.add_form("Contents", ContentsForm())
         self.add_form("Relief valves", ReliefForm())
         self.add_form("Surroundings", AmbientForm())
         self.add_form("Stress & run", StressRunForm())
         self.add_form("Model options", OptionsForm())
 
+        contents, vessel = self.form(ContentsForm), self.form(VesselForm)
+        contents.btn_check.clicked.connect(
+            lambda: contents.check_initial_state(self.current_case()))
+        for w in (vessel.D, vessel.L):
+            w.valueChanged.connect(lambda *_: contents.set_geometry(vessel.D.value(),
+                                                                    vessel.L.value()))
         self.btn_new.clicked.connect(self.new_case)
         self.btn_open.clicked.connect(self._on_open)
         self.btn_save.clicked.connect(self._on_save)
