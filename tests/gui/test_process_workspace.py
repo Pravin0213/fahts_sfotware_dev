@@ -106,3 +106,14 @@ def test_spin_boxes_keep_exact_values_until_edited(qapp):
     w.setValue(1.01325)
     w.stepBy(1)
     assert w.value() == pytest.approx(1.11)           # arrow / wheel edit wins too
+
+
+def test_3d_preview_follows_edits_without_a_display(qapp):
+    """The 3-D geometry is rebuilt on edits; the VTK widget itself is not created offscreen."""
+    from fahts.gui.process.contents_form import ContentsForm
+    ws = ProcessWorkspace()
+    assert ws.vessel_view.plotter is None
+    ws.form(ContentsForm).hc.setValue(1.0)
+    ws._refresh_preview()                           # the debounce timer would do this
+    assert ws.vessel_view._geom.level == pytest.approx(1.0)
+    assert ws.vessel_view._geom.region_fractions()["wet"] == pytest.approx(0.5, abs=0.01)

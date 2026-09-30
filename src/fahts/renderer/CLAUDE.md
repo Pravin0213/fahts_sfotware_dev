@@ -7,6 +7,7 @@
 | `beam_geometry.py` | Build PyVista meshes from FEMModel (centreline + extruded sections) |
 | `colormap.py` | Colour lookup tables for group coloring and temperature mapping |
 | `scene_manager.py` | Drives the PyVista plotter; all 3-D scene operations |
+| `vessel_geometry.py` | Process vessel for the Process tab's 3-D view: shell with per-cell wall-region ids (dry / wet / jet zone dry / wet) at a liquid level, heads, liquid body; `paint()` from region temperatures. No Qt. |
 
 > **SceneManager** is large (1137 lines). Full API docs live in `fahts/gui/CLAUDE.md`
 > (the SceneManager section). This file covers geometry and colormap specifics.
@@ -112,3 +113,15 @@ Critical gotchas specific to the renderer layer:
 - Temperature colour is applied to **both** `cell_data` and `point_data` for smooth interpolation.
 - `_on_cell_picked` routes on cell data keys: `inspector_beam_eid` → inspector callback;
   `element_id` → element-pick callback. Both coexist — inspector mode does not disable element picking.
+
+---
+
+## vessel_geometry.py
+
+`VesselGeometry3D(case)`: axis along x, z up, angles from the top (heat-load convention).
+Grid lines include the jet-zone edges so the zone is exact; the 0/360 deg seam is merged
+(`clean()`), otherwise the zone outline shows a false edge where the zone crosses the top.
+`set_level(level)` recomputes region ids; `region_fractions()` equals the model's
+`VesselFireModel.frac` to < 0.3 % (tests/unit/renderer) - keep it that way: the view must show
+what the model computes.
+

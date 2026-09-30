@@ -8,10 +8,10 @@ import copy
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                              QMessageBox, QProgressBar, QPushButton, QScrollArea, QSplitter,
-                             QStackedWidget, QVBoxLayout, QWidget)
+                             QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from fahts.coupling.vessel_case import VesselCase
 from fahts.coupling.vessfire_import import case_from_vessfire_deck
@@ -19,6 +19,7 @@ from fahts.gui.process.contents_form import ContentsForm
 from fahts.gui.process.fire_form import FireForm
 from fahts.gui.process.results_view import ResultsView
 from fahts.gui.process.run_worker import CaseRunWorker
+from fahts.gui.process.vessel_view import VesselView
 from fahts.gui.process.forms import (AmbientForm, CaseInfoForm, OptionsForm, ReliefForm,
                                      StressRunForm, VesselForm)
 
@@ -95,7 +96,16 @@ class ProcessWorkspace(QWidget):
         self.results.setVisible(False)
         self.results_layout.addWidget(self.results)
         self._worker: CaseRunWorker | None = None
-        split.addWidget(self.results_area)
+        # right side: 3-D view of the vessel (regions / wall temperature) and the results
+        self.right_tabs = QTabWidget()
+        self.vessel_view = VesselView()
+        self.right_tabs.addTab(self.vessel_view, "3-D view")
+        self.right_tabs.addTab(self.results_area, "Results")
+        split.addWidget(self.right_tabs)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(400)
+        self._preview_timer.timeout.connect(self._refresh_preview)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setSizes([680, 820])
@@ -180,6 +190,7 @@ class ProcessWorkspace(QWidget):
             self._loading = False
         self._set_dirty(False)
         self.validate(quiet=True)
+        self._refresh_preview()
 
     def new_case(self) -> None:
         if self._confirm_discard():
@@ -261,6 +272,9 @@ class ProcessWorkspace(QWidget):
         self.results_placeholder.setVisible(False)
         self.results.setVisible(True)
         self.results.show_result(result)
+        self.vessel_view.show_result(result)
+        if self.right_tabs.currentWidget() is not self.vessel_view:
+            self.right_tabs.setCurrentWidget(self.results_area)
         self._run_done(f"Run finished in {result.runtime_s:.1f} s")
         self.run_finished.emit(result)
 
@@ -292,6 +306,17 @@ class ProcessWorkspace(QWidget):
     def _on_form_changed(self) -> None:
         if not self._loading:
             self._set_dirty(True)
+            self._preview_timer.start()
+
+    def _refresh_preview(self) -> None:
+        """Show the edited case's geometry (regions, liquid) in the 3-D view."""
+        case = self.current_case()
+        v = case.vessel
+        if v.inner_diameter_m > 0 and v.length_m > 0:
+            try:
+                self.vessel_view.show_case(case)
+            except (ValueError, ZeroDivisionError) as e:
+                log.debug("3-D preview skipped: %s", e)
 
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty

@@ -35,7 +35,9 @@ def test_run_shows_results_and_exports(qapp, tmp_path):
     ws.run_finished.connect(got.append)
     assert ws.start_run() is not None and ws.is_running
     _wait(ws)
-    assert got and ws.results.isVisibleTo(ws) and not ws.results_placeholder.isVisibleTo(ws)
+    assert got and ws.results.isVisibleTo(ws.results_area)
+    assert not ws.results_placeholder.isVisibleTo(ws.results_area)
+    assert ws.vessel_view._result is got[0]                  # 3-D view has the run too
     res = got[0]
     assert res.series.Time.iloc[-1] == 300.0 and "peak_T_mean_C" in res.series
     labels = dict(summary_lines(res))

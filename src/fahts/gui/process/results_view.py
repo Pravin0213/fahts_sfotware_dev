@@ -18,6 +18,7 @@ class ResultsView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.result: CaseResult | None = None
+        self._plot_pending = False
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
         self.title = QLabel("<b>Results</b>")
@@ -63,7 +64,10 @@ class ResultsView(QWidget):
         for i, (k, v) in enumerate(rows):
             self.summary.setItem(i, 0, QTableWidgetItem(k))
             self.summary.setItem(i, 1, QTableWidgetItem(v))
-        self._plot(res)
+        # plots need laid-out canvases: draw now if visible, else when first shown
+        self._plot_pending = True
+        if self.isVisible():
+            self._draw_pending()
         f = res.failures
         self.fail_table.setColumnCount(len(f.columns))
         self.fail_table.setRowCount(len(f))
@@ -76,6 +80,15 @@ class ResultsView(QWidget):
         self.fail_table.resizeColumnsToContents()
         self.btn_csv.setEnabled(True)
         self.btn_xlsx.setEnabled(True)
+
+    def showEvent(self, event):  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self._draw_pending()
+
+    def _draw_pending(self) -> None:
+        if self._plot_pending and self.result is not None:
+            self._plot_pending = False
+            self._plot(self.result)
 
     def _axes(self, name, n=1):
         fig, canvas = self.figures[name]

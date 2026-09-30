@@ -6,6 +6,7 @@ work on headless CI / development servers without a display.
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_API", "pyqt6")   # see fahts/gui/__init__.py
 
 # Suppress VTK OpenGL warnings on headless hosts — they do not affect correctness.
 os.environ.setdefault("VTK_SILENCE_GET_VOID_POINTER_WARNINGS", "1")

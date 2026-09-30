@@ -127,11 +127,19 @@ deck folder; also `python -m fahts <case.vcase.json | deck folder>`).
 | `run_worker.py` | `CaseRunWorker` QThread (progress / finished_ok / error / cancelled) |
 | `results_view.py` | summary, plots (pressure, temperatures, inventory, release, stress), failure-time table, CSV / Excel export |
 | `fields.py` | `dspin` → `ExactDoubleSpinBox` (keeps the exact loaded value unless the user edits it) |
+| `vessel_view.py` | `VesselView`: 3-D vessel (tab "3-D view" next to "Results"): wall regions before a run, wall temperature per region with a time slider after it; VTK widget created lazily on first show |
 
 Gotchas:
 - A form only touches its own part of the case; `current_case()` applies all forms to a copy.
 - Add a section: write a `_Form`, then `ProcessWorkspace.add_form(title, form)`.
 - Wall regions without area are not plotted (`fahts.coupling.report.regions_with_area`).
 - Numbers are shown in the user's locale (comma decimal separator on this machine).
-- Tests: `tests/gui/` run offscreen (no VTK); `tests/test_main_window_process.py` needs a display.
+- Tests: `tests/gui/` run offscreen (no VTK); `tests/test_main_window_process.py` and
+  `tests/test_vessel_view.py` need a display.
+- Qt binding: `fahts/gui/__init__.py` sets `QT_API=pyqt6` (qtpy would otherwise default to
+  PyQt5, which is installed here, and pyvistaqt widgets could not be parented to ours).
+- Hidden matplotlib canvases have zero size: `ResultsView` draws when first shown.
+- `python -m fahts` installs an exception hook: an exception in a slot shows an error dialog
+  instead of PyQt6 aborting the application.
+- Screenshots of VTK views: use `plotter.screenshot()`; `QWidget.grab()` cannot read OpenGL.
 

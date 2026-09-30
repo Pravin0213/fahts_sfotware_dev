@@ -87,6 +87,32 @@ def _no_gl_noise():
         os.close(saved_fd)
 
 
+# ── Uncaught exceptions ───────────────────────────────────────────────────────
+#
+# PyQt6 aborts the whole application (qFatal) on an exception escaping a slot, so any bug
+# in a callback would lose the user's unsaved work. Log it and show it instead.
+
+def _install_exception_hook() -> None:
+    import logging
+    import traceback
+
+    from PyQt6.QtWidgets import QMessageBox
+
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        logging.getLogger("fahts").error("Unhandled exception:\n%s", text)
+        box = QMessageBox(QMessageBox.Icon.Critical, "Unexpected error",
+                          f"{exc_type.__name__}: {exc}\n\nThe application keeps running; "
+                          "please save your work and report this error.")
+        box.setDetailedText(text)
+        box.exec()
+
+    sys.excepthook = hook
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -101,6 +127,7 @@ def main() -> None:
         sys.exit(1)
 
     app = QApplication(sys.argv)
+    _install_exception_hook()
     app.setApplicationName("FAHTS")
     app.setApplicationVersion("0.1")
 
