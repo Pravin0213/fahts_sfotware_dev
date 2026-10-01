@@ -172,7 +172,10 @@ class FoamCase:
         raise ValueError(f"unknown bc {spec!r}")
 
     def _robin_gradient(self, spec) -> str:
-        _, h, Ta_tab, eps = spec
+        _, h, Ta_tab, eps = spec[:4]
+        # optional 5th entry: extra prescribed flux [W/m²], scalar or per patch face
+        q_add = np.atleast_1d(np.asarray(spec[4], dtype=float)) if len(spec) > 4 \
+            else np.zeros(1)
         n_bc = getattr(self, "_n_coded", 0)
         self._n_coded = n_bc + 1
         ta_t = ", ".join(f"{t:.10g}" for t, _ in Ta_tab)
@@ -189,6 +192,8 @@ class FoamCase:
             static const double taV[] = {{{ta_v}}};
             static const double kT[] = {{{k_t}}};
             static const double kV[] = {{{k_v}}};
+            static const double qAdd[] = {{{", ".join(f"{v:.10g}" for v in q_add)}}};
+            const int nQ = sizeof(qAdd)/sizeof(double);
             const int nTa = sizeof(taT)/sizeof(double);
             const int nK = sizeof(kT)/sizeof(double);
             auto lin = [](const double* x, const double* y, int n, double v)
@@ -207,7 +212,8 @@ class FoamCase:
             forAll(Tw, i)
             {{
                 const scalar q = {h}*(Ta - Tw[i])
-                    + {eps}*sigma*(pow4(Ta) - pow4(Tw[i]));
+                    + {eps}*sigma*(pow4(Ta) - pow4(Tw[i]))
+                    + (nQ == 1 ? qAdd[0] : qAdd[i]);
                 grad[i] = q/lin(kT, kV, nK, Tw[i]);
             }}
             this->refGrad() = grad;

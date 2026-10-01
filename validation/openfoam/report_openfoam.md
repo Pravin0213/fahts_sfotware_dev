@@ -42,8 +42,8 @@ FV values live at cell centres, FEM values at nodes: comparing at cell centres a
 | level | cells | max \|Δ\| [K] | RMS Δ final [K] | Δ vol-mean final [K] | time FAHTS / OF [s] |
 |---|---|---|---|---|---|
 | 0 | 32 | 0.2569 | 0.1358 | 0.1207 | 1.2 / 4.9 |
-| 1 | 64 | 0.2103 | 0.0545 | 0.05158 | 1.4 / 5.0 |
-| 2 | 128 | 0.1441 | 0.05321 | 0.05252 | 1.9 / 5.2 |
+| 1 | 64 | 0.2103 | 0.0545 | 0.05158 | 1.4 / 4.9 |
+| 2 | 128 | 0.1441 | 0.05321 | 0.05252 | 1.9 / 5.0 |
 
 ![plate_iso_fire_ec3](figures/plate_iso_fire_ec3.png)
 
@@ -53,9 +53,9 @@ BOX 300×300×12, 1 m, HC fire outside (h=50, ε=0.7), cavity+ends adiabatic, EC
 
 | level | cells | max \|Δ\| [K] | RMS Δ final [K] | Δ vol-mean final [K] | time FAHTS / OF [s] |
 |---|---|---|---|---|---|
-| 0 | 96 | 20.91 | 0.06785 | 0.04409 | 0.8 / 4.4 |
-| 1 | 768 | 6.969 | 0.02236 | 0.0123 | 1.4 / 5.0 |
-| 2 | 6144 | 2.098 | 0.006725 | 0.00392 | 6.9 / 9.9 |
+| 0 | 96 | 20.91 | 0.06785 | 0.04409 | 0.7 / 4.4 |
+| 1 | 768 | 6.969 | 0.02236 | 0.0123 | 1.4 / 4.8 |
+| 2 | 6144 | 2.098 | 0.006725 | 0.00392 | 6.8 / 9.5 |
 
 ![box_hc_fire_ec3](figures/box_hc_fire_ec3.png)
 
@@ -65,8 +65,8 @@ Pipe Ø300×15, HC fire outside (h=50, ε=0.8), liquid inside (h=500, 20 °C), E
 
 | level | cells | max \|Δ\| [K] | RMS Δ final [K] | Δ vol-mean final [K] | time FAHTS / OF [s] |
 |---|---|---|---|---|---|
-| 0 | 144 | 0.2353 | 0.1507 | 0.1503 | 0.8 / 8.2 |
-| 1 | 576 | 0.06768 | 0.03691 | 0.0368 | 1.2 / 8.5 |
+| 0 | 144 | 0.2353 | 0.1507 | 0.1503 | 0.8 / 8.0 |
+| 1 | 576 | 0.06768 | 0.03691 | 0.0368 | 1.2 / 8.3 |
 
 ![pipe_fire_liquid_ec3](figures/pipe_fire_liquid_ec3.png)
 
@@ -76,9 +76,9 @@ I 300×150, ISO 834 on bottom flange only (h=25, ε=0.7), rest adiabatic, EC3
 
 | level | cells | max \|Δ\| [K] | RMS Δ final [K] | Δ vol-mean final [K] | time FAHTS / OF [s] |
 |---|---|---|---|---|---|
-| 0 | 72 | 110.4 | 30.83 | 13.69 | 0.8 / 4.4 |
-| 1 | 288 | 59.96 | 13.32 | 5.305 | 1.3 / 4.6 |
-| 2 | 1152 | 31.3 | 5.926 | 2.227 | 2.9 / 5.4 |
+| 0 | 72 | 110.4 | 30.83 | 13.69 | 0.8 / 4.3 |
+| 1 | 288 | 59.96 | 13.32 | 5.305 | 1.3 / 4.5 |
+| 2 | 1152 | 31.3 | 5.926 | 2.227 | 2.9 / 5.2 |
 
 ![ibeam_bottom_fire_ec3](figures/ibeam_bottom_fire_ec3.png)
 
@@ -88,8 +88,8 @@ Plate 500×500×20, 100 kW/m² on a 100×100 spot, back face h=10 to 20 °C, EC3
 
 | level | cells | max \|Δ\| [K] | RMS Δ final [K] | Δ vol-mean final [K] | time FAHTS / OF [s] |
 |---|---|---|---|---|---|
-| 0 | 800 | 16.17 | 3.085 | 0.09292 | 0.7 / 4.6 |
-| 1 | 6400 | 5.798 | 0.8049 | 0.02375 | 3.7 / 7.2 |
+| 0 | 800 | 16.17 | 3.085 | 0.09292 | 0.7 / 4.5 |
+| 1 | 6400 | 5.798 | 0.8049 | 0.02375 | 3.8 / 6.9 |
 
 ![plate_hotspot_flux_ec3](figures/plate_hotspot_flux_ec3.png)
 
