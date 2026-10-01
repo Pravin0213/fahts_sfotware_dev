@@ -237,6 +237,12 @@ class ResultsPanel(QWidget):
         T_mat = T_section[self._eid]          # (n_steps, n_nodes)
         t_idx = min(self._t_idx, T_mat.shape[0] - 1)
         T_nodes = T_mat[t_idx]                # (n_nodes,)
+        if len(T_nodes) != len(self._triang.x):
+            # Solver mesh (surface or 3-D solid) ≠ legacy cross-section contour mesh:
+            # no meaningful 2-D contour — show the placeholder instead of crashing.
+            self._placeholder.show()
+            self._canvas.hide()
+            return
 
         T_lo = float(T_nodes.min())
         T_hi = float(T_nodes.max())

@@ -336,6 +336,13 @@ class SurfaceTransientSolver:
             self._F_arr     = None
 
         # §3.5.4 per-face falloff flux for RadiationBall beyond r2 (time-invariant)
+        # q_per_quad may be a static array or a callable t → (n_quads,) (time-varying
+        # point/line-source power — see fahts/core/heat/bc/face_flux.py)
+        self._q_quad_fn: Callable[[float], np.ndarray] | None = (
+            q_per_quad if callable(q_per_quad) else None
+        )
+        if self._q_quad_fn is not None:
+            q_per_quad = self._q_quad_fn(0.0)
         self._q_per_quad: np.ndarray | None = (
             np.asarray(q_per_quad, dtype=float) if q_per_quad is not None else None
         )
@@ -583,8 +590,10 @@ class SurfaceTransientSolver:
 
             # Per-quad falloff flux (§3.5.4) — consistent row sums, face-dependent
             if self._q_per_quad is not None:
+                q_dir = (np.asarray(self._q_quad_fn(t), dtype=float)
+                         if self._q_quad_fn is not None else self._q_per_quad)
                 np.add.at(Q_i, self._quads_flat,
-                          (self._q_per_quad[:, None] * self._M_consistent_rowsum).ravel())
+                          (q_dir[:, None] * self._M_consistent_rowsum).ravel())
 
             # Steel surface re-radiation (§3.2.4) — Gauss-point integrated.
             # q_presc (uniform) sides scale by n_exposed_sides; q_per_quad (directional) does not.
@@ -700,9 +709,11 @@ class SurfaceTransientSolver:
         for _iter_i in range(self._nonlinear_max_iter):
             K_i, M_i, Q_i = self._assemble_step(T_iter, t)
             A = K_i + _mass_to_matrix(M_i, two_over_dt)
+            # Current-iterate K_i, M_i on the history side (not K_prev/M_prev):
+            # keeps CN 2nd-order in Δt when k(T)/c(T) vary.
             B = (
-                Q_i - self._K_prev @ T_prev
-                + _mass_matvec(self._M_prev, self._T_dot_prev)
+                Q_i - K_i @ T_prev
+                + _mass_matvec(M_i, self._T_dot_prev)
             )
 
             # §3.5.2 Dirichlet elimination: pin prescribed DOFs before solve.
@@ -766,6 +777,8 @@ class SurfaceTransientSolver:
         """
         n = self._mesh.n_nodes
         T = np.full(n, self._T0, dtype=float)
+        for bc in self._prescribed_bcs:          # prescribed DOFs start at their t=0 value
+            T[list(bc.node_indices)] = bc.eval(0.0)
         out_dt    = output_dt if output_dt is not None else dt
         out_every = max(1, round(out_dt / dt))
 

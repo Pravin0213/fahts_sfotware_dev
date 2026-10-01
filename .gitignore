@@ -34,3 +34,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Generated OpenFOAM comparison cases (recreated by validation/openfoam/compare_openfoam.py)
+validation/openfoam/runs/

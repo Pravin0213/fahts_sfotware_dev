@@ -82,6 +82,8 @@ class SceneManager:
 
         # Pipe geometry sides — kept in sync with c_circ from the mesh config
         self._n_pipe_sides: int = 16
+        # Draw members with their real wall/plate thickness (3-D solid geometry)
+        self._show_thickness: bool = True
 
         # Mode state
         self._render_mode: str = "section"   # 'wire' | 'section'
@@ -201,7 +203,9 @@ class SceneManager:
             self._rebuild_axis_marker()
 
         log.info("Building solid mesh (%d elements)…", model.n_elements)
-        self._full_solid_mesh = build_model_mesh(model, n_pipe_sides=self._n_pipe_sides)
+        self._full_solid_mesh = build_model_mesh(
+            model, n_pipe_sides=self._n_pipe_sides, show_thickness=self._show_thickness
+        )
         self._solid_mesh = self._full_solid_mesh   # all groups visible initially
 
         log.info("Building centreline mesh…")
@@ -243,7 +247,32 @@ class SceneManager:
         if n == self._n_pipe_sides or self._model is None:
             return
         self._n_pipe_sides = n
-        self._full_solid_mesh = build_model_mesh(self._model, n_pipe_sides=n)
+        self._full_solid_mesh = build_model_mesh(
+            self._model, n_pipe_sides=n, show_thickness=self._show_thickness
+        )
+        self._solid_mesh = self._full_solid_mesh
+        self._write_group_scalars()
+        self._apply_visibility_filter()
+
+    @property
+    def show_thickness(self) -> bool:
+        return self._show_thickness
+
+    def set_show_thickness(self, on: bool) -> None:
+        """
+        Draw members with their real wall / plate thickness (True) or as USFOS-style
+        zero-thickness mid-surface panels (False).  Rebuilds the geometry in place;
+        group colours, visibility and temperature colouring are re-applied.
+        """
+        on = bool(on)
+        if on == self._show_thickness:
+            return
+        self._show_thickness = on
+        if self._model is None:
+            return
+        self._full_solid_mesh = build_model_mesh(
+            self._model, n_pipe_sides=self._n_pipe_sides, show_thickness=on
+        )
         self._solid_mesh = self._full_solid_mesh
         self._write_group_scalars()
         self._apply_visibility_filter()

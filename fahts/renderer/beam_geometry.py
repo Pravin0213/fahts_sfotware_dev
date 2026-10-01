@@ -35,7 +35,7 @@ import pyvista as pv
 from fahts.core.model.element import BeamElement, ShellElement
 from fahts.core.model.fem_model import FEMModel
 from fahts.core.model.node import Node
-from fahts.core.model.section import BoxSection, PipeSection, ISection
+from fahts.core.model.section import BoxSection, PipeSection, ISection, PlateSection
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -293,6 +293,84 @@ def build_isection_mesh(
 
 # ── Shell surface mesh builder ─────────────────────────────────────────────────
 
+def build_thick_member_mesh(
+    element: BeamElement,
+    section: BoxSection | PipeSection | ISection,
+    nodes: dict[int, Node],
+    n_pipe_sides: int = _PIPE_SIDES,
+) -> pv.PolyData | None:
+    """
+    Build a beam member with its REAL wall thickness (outer + inner surfaces + end rings).
+
+    Uses the same Hex8 solid meshers as the 3-D solver (one layer, coarse divisions) and
+    returns their boundary faces placed in the member's local frame (incl. eccentricity),
+    so the rendered solid matches the analysed geometry.  Cell-data ``element_id``.
+    Returns None for unsupported sections.
+    """
+    from fahts.core.heat.solid_mesh import BoxSolidMesher, IProfileSolidMesher, PipeSolidMesher
+
+    p1, p2, direction = _eccentric_endpoints(element, nodes)
+    L = float(np.linalg.norm(p2 - p1))
+    if L <= 1e-12:
+        return None
+    lx, ly, lz = _local_frame(direction, element.local_z)
+    if isinstance(section, PipeSection):
+        solid = PipeSolidMesher(section, L, c_circ=max(3, n_pipe_sides), n_length=1,
+                                n_layers=1).build()
+    elif isinstance(section, BoxSection):
+        solid = BoxSolidMesher(section, L, n_top=1, n_side=1, n_length=1, n_layers=1).build()
+    elif isinstance(section, ISection):
+        solid = IProfileSolidMesher(section, L, n_top=2, n_side=1, n_bottom=2, n_length=1,
+                                    n_layers=1).build()
+    else:
+        return None
+    R = np.column_stack([lx, ly, lz])
+    pts = p1 + np.asarray(solid.nodes) @ R.T
+    faces = np.asarray(solid.faces)
+    mesh = pv.PolyData(pts, np.hstack([np.full((len(faces), 1), 4), faces]).ravel())
+    mesh.cell_data["element_id"] = np.full(mesh.n_cells, element.eid, dtype=np.int32)
+    return mesh
+
+
+def build_thick_shell_mesh(
+    shell_elements: dict[int, ShellElement],
+    nodes: dict[int, Node],
+    sections: dict,
+    centroid: np.ndarray,
+) -> pv.PolyData:
+    """
+    Shell elements with their plate thickness: QUADSHEL as a one-layer Hex8 plate
+    (both faces + edges); TRISHELL as a triangular prism (mid-surface ± t/2).
+    Points are centroid-shifted like build_shell_surface_mesh().
+    """
+    from fahts.core.heat.solid_mesh import PlateSolidMesher
+
+    meshes: list[pv.PolyData] = []
+    for se in shell_elements.values():
+        sec = sections.get(se.geom_id)
+        corners = np.array([nodes[n].xyz for n in se.nodes], dtype=float)
+        t = float(getattr(sec, "thickness", 0.0)) if sec is not None else 0.0
+        if len(se.nodes) == 4 and isinstance(sec, PlateSection) and t > 0.0:
+            solid = PlateSolidMesher(sec, corners, mesh_12=1, mesh_14=1, n_layers=1).build()
+            faces = np.asarray(solid.faces)
+            m = pv.PolyData(np.asarray(solid.nodes) - centroid,
+                            np.hstack([np.full((len(faces), 1), 4), faces]).ravel())
+        elif len(se.nodes) == 3 and t > 0.0:
+            nrm = np.cross(corners[1] - corners[0], corners[2] - corners[0])
+            nrm /= max(np.linalg.norm(nrm), 1e-12)
+            pts = np.vstack([corners - 0.5 * t * nrm, corners + 0.5 * t * nrm]) - centroid
+            f = [3, 0, 2, 1, 3, 3, 4, 5, 4, 0, 1, 4, 3, 4, 1, 2, 5, 4, 4, 2, 0, 3, 5]
+            m = pv.PolyData(pts, np.array(f))
+        else:
+            m = pv.PolyData(corners - centroid,
+                            np.array([len(se.nodes), *range(len(se.nodes))]))
+        m.cell_data["element_id"] = np.full(m.n_cells, se.eid, dtype=np.int32)
+        meshes.append(m)
+    if not meshes:
+        return pv.PolyData()
+    return pv.merge(meshes)
+
+
 def build_shell_surface_mesh(
     shell_elements: dict[int, ShellElement],
     nodes: dict[int, Node],
@@ -385,6 +463,7 @@ def build_model_mesh(
     model: FEMModel,
     skip_missing: bool = True,
     n_pipe_sides: int = _PIPE_SIDES,
+    show_thickness: bool = False,
 ) -> pv.PolyData:
     """
     Build a single merged PolyData for all beams and shells in *model*.
@@ -397,6 +476,10 @@ def build_model_mesh(
 
     Points are centroid-shifted so PyVista renders correctly regardless of
     global vessel coordinates.
+
+    ``show_thickness=True`` draws every member with its real wall / plate thickness
+    (outer + inner surfaces and end rings, from the 3-D solid meshers) instead of the
+    USFOS-style zero-thickness mid-surface panels.
     """
     meshes: list[pv.PolyData] = []
     centroid = model.centroid()
@@ -409,6 +492,13 @@ def build_model_mesh(
             continue
 
         section = model.sections.get(elem.geom_id)
+
+        if show_thickness and isinstance(section, (BoxSection, PipeSection, ISection)):
+            mesh = build_thick_member_mesh(elem, section, model.nodes, n_pipe_sides)
+            if mesh is not None:
+                mesh.points -= centroid
+                meshes.append(mesh)
+                continue
 
         if isinstance(section, BoxSection):
             mesh = build_beam_mesh(elem, section, model.nodes)
@@ -429,8 +519,10 @@ def build_model_mesh(
 
     # ── Shell elements ────────────────────────────────────────────────────────
     if model.shell_elements:
-        shell_mesh = build_shell_surface_mesh(
-            model.shell_elements, model.nodes, centroid
+        shell_mesh = (
+            build_thick_shell_mesh(model.shell_elements, model.nodes, model.sections, centroid)
+            if show_thickness
+            else build_shell_surface_mesh(model.shell_elements, model.nodes, centroid)
         )
         if shell_mesh.n_cells > 0:
             meshes.append(shell_mesh)

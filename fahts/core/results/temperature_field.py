@@ -12,8 +12,11 @@ Data contract (stable, referenced by renderer and post-processor):
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+import logging
 from typing import TYPE_CHECKING
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fahts.core.heat.section_mesh.section_mesh import SectionMesh
@@ -225,6 +228,44 @@ class TemperatureField:
         )
 
     @classmethod
+    def from_solid_solver_run(
+        cls,
+        eid: int,
+        times: np.ndarray,
+        T_history: np.ndarray,
+        mesh: object,
+        nodes_global: np.ndarray | None = None,
+    ) -> "TemperatureField":
+        """
+        Create a single-element TemperatureField from SolidTransientSolver output.
+
+        T_centroid is the VOLUME-weighted mean of all solid nodes
+        (``SolidMesh.node_volume_weights``); T_section holds every solid node.
+        nodal_geometry = (nodes_global, all boundary Quad4 faces) so the renderer
+        draws the true 3-D member surface (outer, inner cavity and end caps).
+
+        Args:
+            eid:          Element ID.
+            times:        (n_steps,) output times [s].
+            T_history:    (n_steps, n_nodes) nodal temperatures [°C].
+            mesh:         SolidMesh used for the analysis.
+            nodes_global: (n_nodes, 3) node positions in global model coords [m].
+        """
+        T_hist = np.asarray(T_history, dtype=float)
+        T_cen = T_hist @ np.asarray(mesh.node_volume_weights, dtype=float)
+        ng: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        if nodes_global is not None:
+            ng = {eid: (np.asarray(nodes_global, dtype=float),
+                        np.asarray(mesh.faces, dtype=np.intp).copy())}
+        return cls(
+            times=np.asarray(times, dtype=float),
+            element_ids=[eid],
+            T_centroid=T_cen[:, np.newaxis],
+            T_section={eid: T_hist},
+            nodal_geometry=ng,
+        )
+
+    @classmethod
     def from_shell_solver_run(
         cls,
         eid: int,
@@ -332,9 +373,13 @@ class TemperatureField:
             BeamSurfaceMesh as _BSM,
         )
 
+        from fahts.core.heat.solid_mesh.solid_mesh import SolidMesh as _SM
+
         if eid not in self.T_section:
             return 0.0, 0.0
 
+        if isinstance(mesh, _SM):
+            return self._section_gradient_solid(eid, t_idx, mesh)
         if isinstance(mesh, _BSM):
             return self._section_gradient_surface(eid, t_idx, mesh)
         return self._section_gradient_cross(eid, t_idx, mesh)
@@ -415,6 +460,33 @@ class TemperatureField:
         beta_z = sum_Ty_A / Iz if Iz > 1e-20 else 0.0
         beta_y = sum_Tz_A / Iy if Iy > 1e-20 else 0.0
         return beta_y, beta_z
+
+    def _section_gradient_solid(
+        self,
+        eid: int,
+        t_idx: int,
+        mesh: object,
+    ) -> tuple[float, float]:
+        """
+        Gradient for a 3-D SolidMesh (beam-local nodes [x, y, z]).
+
+        Volume-weighted least-squares plane fit  T ≈ a + βz·y + βy·z  over all solid
+        nodes (weights = lumped nodal volumes) — the solid analogue of §3.4.2 with the
+        same (βy ↔ z-variation, βz ↔ y-variation) convention.  Returns (0, 0) when the
+        fit is degenerate (e.g. a mesh with no spread in y or z) or sizes mismatch.
+        """
+        T_nodes = np.asarray(self.T_section[eid][t_idx], dtype=float)
+        nodes = np.asarray(mesh.nodes, dtype=float)
+        if len(T_nodes) != len(nodes):
+            log.debug("section_gradient: node count mismatch for element %d", eid)
+            return 0.0, 0.0
+        w = np.sqrt(np.asarray(mesh.node_volume_weights, dtype=float))
+        A = np.column_stack([np.ones(len(nodes)), nodes[:, 1], nodes[:, 2]]) * w[:, None]
+        coef, _res, rank, _sv = np.linalg.lstsq(A, T_nodes * w, rcond=None)
+        if rank < 3:
+            log.debug("section_gradient: degenerate solid fit for element %d", eid)
+            return 0.0, 0.0
+        return float(coef[2]), float(coef[1])
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
